@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <title>Kassa — O'yin klubi</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#0E1116" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
@@ -180,6 +187,10 @@
   .kv{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
   .kv:last-child{border-bottom:none}
   .kv b{font-weight:800}
+  .install{display:flex;align-items:center;gap:10px;width:100%;background:var(--surface2);border:1px solid var(--accent);
+    color:var(--text);border-radius:12px;padding:12px 14px;font-weight:700;font-size:14px;margin-top:10px}
+  .install svg{width:20px;height:20px;stroke:var(--accent);fill:none;stroke-width:2;flex:0 0 auto}
+  .install small{display:block;font-weight:500;color:var(--muted);font-size:11px}
 </style>
 </head>
 <body>
@@ -828,6 +839,7 @@ function setTab(){
     <button onclick="openReports()"><div class="mi">${I.report}</div>
       <div class="mt"><b>Hisobot</b><span>Kunlik / oylik PDF</span></div><div class="chev">${I.chev}</div></button>
   </div>
+  <div data-install>${installBtnHTML()}</div>
   <div class="banner">Biznes-kun: har kuni ${String(CONFIG.BUSINESS_DAY_CUTOFF_HOUR).padStart(2,'0')}:00 gacha — oldingi kun hisoblanadi.<br>
   ${online()?'Ma\'lumot Google Sheets orqali barcha qurilmalarda umumiy.':'Server ulanmagan — faqat shu qurilmada saqlanmoqda.'}</div>`;
 }
@@ -1074,6 +1086,7 @@ function renderLogin(){
       onkeydown="if(event.key==='Enter')doLogin()"/></div>
     <div class="err" id="li_err"></div>
     <button class="btn block" onclick="doLogin()">Kirish</button>
+    <div data-install>${installBtnHTML()}</div>
     <p class="money-note">Boshlang'ich: <b>admin</b> / <b>admin</b></p></div>`;
 }
 function doLogin(){
@@ -1085,8 +1098,38 @@ function doLogin(){
 }
 function logout(){ CURRENT=null; LS.set('kassa_session',''); render(); }
 
+/* =====================================================================
+   ANDROID ILOVASI (PWA) — o'rnatish va oflayn ishlash
+   ===================================================================== */
+let INSTALL_EVT=null;
+const installed=()=> window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+window.addEventListener('beforeinstallprompt',e=>{ e.preventDefault(); INSTALL_EVT=e; refreshInstallBtns(); });
+window.addEventListener('appinstalled',()=>{ INSTALL_EVT=null; refreshInstallBtns(); toast("Ilova o'rnatildi ✓"); });
+
+const ICON_DL=`<svg viewBox="0 0 24 24"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg>`;
+function installBtnHTML(){
+  if(installed() || !INSTALL_EVT) return '';
+  return `<button class="install" id="installbtn" onclick="doInstall()">${ICON_DL}
+    <span>Ilovani o'rnatish<small>Telefon ekraniga qo'shiladi — brauzersiz ochiladi</small></span></button>`;
+}
+function refreshInstallBtns(){
+  const holders=document.querySelectorAll('[data-install]');
+  holders.forEach(h=>{ h.innerHTML=installBtnHTML(); });
+}
+async function doInstall(){
+  if(!INSTALL_EVT){ toast("Brauzer menyusidan \"Ekranga qo'shish\"ni tanlang"); return; }
+  INSTALL_EVT.prompt();
+  await INSTALL_EVT.userChoice;
+  INSTALL_EVT=null; refreshInstallBtns();
+}
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+
 /* ---------- ishga tushirish ---------- */
 async function boot(){
+  const t=new URLSearchParams(location.search).get('tab');   // ekran yorliqlari (shortcuts)
+  if(['PC','BAR','DEBT','SET'].includes(t)) TAB=t;
   rebuild(); restoreSession(); render();
   if(online()){ await sync(); rebuild(); restoreSession(); render(); }
 }
