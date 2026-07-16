@@ -3,12 +3,13 @@
    Ma'lumot (operatsiyalar) baribar qurilmada saqlanadi va aloqa
    tiklanganda Google Sheets'ga yuboriladi. */
 
-const VERSION = 'kassa-v1';
+const VERSION = 'kassa-v2';
 const SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
   './icon-192.png',
+  './logo.png',
   './icon-512.png',
   './vendor/jspdf.umd.min.js'
 ];

@@ -1,6 +1,6 @@
 {
-  "name": "Kassa — O'yin klubi",
-  "short_name": "Kassa",
+  "name": "Aura — Kassa",
+  "short_name": "Aura",
   "description": "O'yin klubi uchun kassa: PC, Bar, Qarz va hisobotlar.",
   "lang": "uz",
   "dir": "ltr",
@@ -10,14 +10,41 @@
   "orientation": "portrait",
   "background_color": "#0E1116",
   "theme_color": "#0E1116",
-  "categories": ["business", "finance", "productivity"],
+  "categories": [
+    "business",
+    "finance",
+    "productivity"
+  ],
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "shortcuts": [
-    { "name": "Bar — sotish", "short_name": "Bar", "url": "./index.html?tab=BAR" },
-    { "name": "Qarz", "short_name": "Qarz", "url": "./index.html?tab=DEBT" }
+    {
+      "name": "Bar — sotish",
+      "short_name": "Bar",
+      "url": "./index.html?tab=BAR"
+    },
+    {
+      "name": "Qarz",
+      "short_name": "Qarz",
+      "url": "./index.html?tab=DEBT"
+    }
   ]
 }
