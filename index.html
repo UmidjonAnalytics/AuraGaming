@@ -11,7 +11,7 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
 <style>
   :root{
     --bg:#0E1116; --surface:#161B22; --surface2:#1E2530; --line:#2A323F;
@@ -191,6 +191,19 @@
     color:var(--text);border-radius:12px;padding:12px 14px;font-weight:700;font-size:14px;margin-top:10px}
   .install svg{width:20px;height:20px;stroke:var(--accent);fill:none;stroke-width:2;flex:0 0 auto}
   .install small{display:block;font-weight:500;color:var(--muted);font-size:11px}
+  .bal.span2{grid-column:1 / -1}
+  .bal.debt .dot{background:var(--warn)} .bal.debt .amt{color:var(--warn)}
+  .bal.total .dot{background:var(--faint)} .bal.total .amt{color:var(--text)}
+  .scan-tile{display:flex;align-items:center;gap:14px;width:100%;background:var(--card-dim);border:1px solid var(--card);
+    border-radius:var(--radius);padding:16px;margin-top:14px;text-align:left}
+  .scan-tile:active{transform:scale(.99)}
+  .scan-tile .ic{width:50px;height:50px;border-radius:12px;background:var(--card);display:grid;place-items:center;flex:0 0 auto}
+  .scan-tile .ic svg{width:28px;height:28px;stroke:#04222f;stroke-width:2.3;fill:none}
+  .scan-tile b{font-size:16px} .scan-tile span{font-size:12px;color:var(--muted);display:block}
+  .paydebt-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;background:var(--ok);color:#04231a;
+    font-weight:800;border-radius:14px;padding:15px;min-height:var(--tap);margin-top:12px}
+  .paydebt-btn svg{width:22px;height:22px;stroke:#04231a;stroke-width:2.3;fill:none}
+  .method3 .opt.on.debt{border-color:var(--warn);color:var(--warn);background:#332707}
 </style>
 </head>
 <body>
@@ -198,176 +211,126 @@
 
 <script>
 /* =====================================================================
-   KASSA — o'yin klubi uchun pul nazorati
-   KO'P QURILMA rejimi: har bir amal (operatsiya) umumiy jurnalga
-   qo'shiladi. Qurilmalar bir-birining amallarini qabul qiladi —
-   hech kim boshqasining ma'lumotini o'chirib yubormaydi.
+   KASSA — o'yin klubi (v2)
+   Menyular: PC, Bar (foydalanuvchi) + Sozlamalar (admin).
+   Qarz — PC'da to'lov usuli (Naqd/Karta/Qarz). Bar faqat Naqd/Karta.
+   Amallar umumiy jurnalga qo'shiladi (ko'p qurilma xavfsiz).
    ===================================================================== */
 
 const CONFIG = {
-  BUSINESS_DAY_CUTOFF_HOUR: 6,   // 06:00 gacha — oldingi kun
+  BUSINESS_DAY_CUTOFF_HOUR: 6,
   LOW_STOCK: 3,
   CURRENCY: "so'm",
-  SHEETS_API_URL: 'https://script.google.com/macros/s/AKfycbymuNBjOvdPhqm_qkNcR26LqqvIfgDmDehqoEIgs9rHQXWzwoYW4kfPeDc6wICXopwL3A/exec',            // <-- Apps Script /exec manzilini shu yerga qo'ying
-  POLL_MS: 4000                  // boshqa qurilmalarni tekshirish oralig'i
+  SHEETS_API_URL: '',
+  POLL_MS: 4000
 };
 const online = ()=> !!CONFIG.SHEETS_API_URL;
 
-/* ---------- lokal saqlash (kesh + oflayn navbat) ---------- */
 const mem={};
-const LS={
-  get(k){ try{return localStorage.getItem(k);}catch(e){return mem[k]??null;} },
-  set(k,v){ try{localStorage.setItem(k,v);}catch(e){mem[k]=v;} }
-};
+const LS={ get(k){try{return localStorage.getItem(k);}catch(e){return mem[k]??null;}},
+           set(k,v){try{localStorage.setItem(k,v);}catch(e){mem[k]=v;}} };
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,9); }
 
-/* ---------- OPERATSIYA JURNALI ---------- */
-let OPS = JSON.parse(LS.get('kassa_ops')||'[]');       // serverdan tasdiqlangan
-let PENDING = JSON.parse(LS.get('kassa_pending')||'[]'); // yuborilmagan (oflayn)
-let SYNC = 'ok';   // 'ok' | 'off'
-let ST = null;     // hisoblangan holat
-
+let OPS=JSON.parse(LS.get('kassa_ops')||'[]');
+let PENDING=JSON.parse(LS.get('kassa_pending')||'[]');
+let SYNC='ok', ST=null;
 function persist(){ LS.set('kassa_ops',JSON.stringify(OPS)); LS.set('kassa_pending',JSON.stringify(PENDING)); }
-function lastSeq(){ return OPS.length? OPS[OPS.length-1].seq : 0; }
-
-/* Amalni qo'shish: darhol ekranda ko'rinadi, keyin serverga yuboriladi */
+function lastSeq(){ return OPS.length?OPS[OPS.length-1].seq:0; }
 function pushOp(type,p){
-  PENDING.push({uid:uid(), ts:Date.now(), user:CURRENT?CURRENT.username:'-', type, p});
+  PENDING.push({uid:uid(),ts:Date.now(),user:CURRENT?CURRENT.username:'-',type,p});
   persist(); rebuild(); render(); sync();
 }
 
-/* ---------- HOLATNI QAYTA HISOBLASH (jurnaldan) ---------- */
+/* ---------- holatni jurnaldan qayta hisoblash ---------- */
 function rebuild(){
-  const st={
-    users:[{username:'admin',password:'admin',role:'admin'}],
+  const st={ users:[{username:'admin',password:'admin',role:'admin'}],
     reasons:["Ijara","Oylik","Xarid","Kommunal"],
-    products:[], ledger:[], sales:[], debts:[]
-  };
+    products:[], ledger:[], sales:[], debtGiven:[], debtPaid:[] };
   const P=b=>st.products.find(x=>x.barcode===b);
-  const all=[...OPS,...PENDING];
-  for(const op of all){
-    const p=op.p||{};
+  for(const op of [...OPS,...PENDING]){
+    const p=op.p||{}, by=op.user, ts=op.ts;
     switch(op.type){
-      case 'user_add':{
-        const i=st.users.findIndex(u=>u.username===p.username);
+      case 'user_add':{ const i=st.users.findIndex(u=>u.username===p.username);
         if(i>=0) st.users[i]={username:p.username,password:p.password,role:p.role};
-        else st.users.push({username:p.username,password:p.password,role:p.role});
-        break;}
+        else st.users.push({username:p.username,password:p.password,role:p.role}); break; }
       case 'user_del': st.users=st.users.filter(u=>u.username!==p.username); break;
       case 'reason_add': if(!st.reasons.includes(p.reason)) st.reasons.push(p.reason); break;
 
-      case 'money':  // {safe,method,dir,amount,date,reason}
-        st.ledger.push({...p, by:op.user, ts:op.ts}); break;
-
-      case 'prod_new':
-        if(!P(p.barcode)) st.products.push({barcode:p.barcode,name:p.name,photo:p.photo||'',price:p.price||0,qty:0});
+      case 'money':          // {safe,method('cash'|'card'|'debt'),dir,amount,date,reason,name}
+        if(p.method==='debt') st.debtGiven.push({name:p.name||'',amount:p.amount,date:p.date,by,ts});
+        else st.ledger.push({safe:p.safe,method:p.method,dir:p.dir,amount:p.amount,date:p.date,reason:p.reason||'',by,ts});
         break;
-      case 'stock_in':{ const x=P(p.barcode); if(x) x.qty+=p.qty; break;}
-      case 'price':{ const x=P(p.barcode); if(x) x.price=p.price; break;}
-      case 'stock_set':  // inventarizatsiya natijasi (absolyut)
-        (p.counts||[]).forEach(c=>{ const x=P(c.barcode); if(x) x.qty=c.qty; }); break;
+      case 'debt_pay':       // {name,amount,method,date}
+        st.debtPaid.push({name:p.name||'',amount:p.amount,method:p.method,date:p.date,by,ts});
+        st.ledger.push({safe:'PC',method:p.method,dir:'in',amount:p.amount,date:p.date,reason:"Qarz to'lovi",by,ts});
+        break;
 
-      case 'sale':{
-        st.sales.push({...p, by:op.user, ts:op.ts});
-        (p.items||[]).forEach(it=>{ const x=P(it.barcode); if(x) x.qty-=it.qty; });
-        st.ledger.push({safe:'BAR',method:p.method,dir:'in',amount:p.total,date:p.date,reason:'Sotuv',by:op.user,ts:op.ts});
-        break;}
+      case 'prod_new': if(!P(p.barcode)) st.products.push({barcode:p.barcode,name:p.name,photo:p.photo||'',price:p.price||0,qty:0}); break;
+      case 'stock_in':{ const x=P(p.barcode); if(x)x.qty+=p.qty; break; }
+      case 'price':{ const x=P(p.barcode); if(x)x.price=p.price; break; }
+      case 'stock_set': (p.counts||[]).forEach(c=>{ const x=P(c.barcode); if(x)x.qty=c.qty; }); break;
 
-      case 'debt_add':{
-        st.debts.push({id:op.uid, date:p.date, debtor:p.debtor, pc:p.pc||0, bar:p.bar||0,
-                       paidPc:0, paidBar:0, items:p.items||[], status:'open', by:op.user, ts:op.ts});
-        (p.items||[]).forEach(it=>{ const x=P(it.barcode); if(x) x.qty-=it.qty; });
-        break;}
-      case 'debt_pay':{
-        payFIFO(st,p.debtor,'pc',p.pc||0); payFIFO(st,p.debtor,'bar',p.bar||0);
-        if(p.pc>0) st.ledger.push({safe:'PC',method:p.method,dir:'in',amount:p.pc,date:p.date,reason:"Qarz to'lovi",by:op.user,ts:op.ts});
-        if(p.bar>0) st.ledger.push({safe:'BAR',method:p.method,dir:'in',amount:p.bar,date:p.date,reason:"Qarz to'lovi",by:op.user,ts:op.ts});
-        break;}
+      case 'sale':
+        st.sales.push({date:p.date,method:p.method,total:p.total,items:p.items||[],by,ts});
+        (p.items||[]).forEach(it=>{ const x=P(it.barcode); if(x)x.qty-=it.qty; });
+        st.ledger.push({safe:'BAR',method:p.method,dir:'in',amount:p.total,date:p.date,reason:'Sotuv',by,ts});
+        break;
     }
   }
   ST=st;
-  if(CURRENT){ const u=ST.users.find(x=>x.username===CURRENT.username); CURRENT = u||null; }
-}
-function payFIFO(st,name,kind,amount){
-  if(amount<=0) return;
-  const key=kind==='pc'?'pc':'bar', pk=kind==='pc'?'paidPc':'paidBar';
-  for(const d of st.debts){
-    if(d.debtor!==name||d.status==='closed') continue;
-    const rem=d[key]-d[pk]; if(rem<=0) continue;
-    const take=Math.min(rem,amount); d[pk]+=take; amount-=take;
-    if(d.pc-d.paidPc<=0 && d.bar-d.paidBar<=0) d.status='closed';
-    if(amount<=0) break;
-  }
+  if(CURRENT){ CURRENT=ST.users.find(x=>x.username===CURRENT.username)||null; }
 }
 
-/* ---------- SERVER BILAN SINXRONLASH ---------- */
+/* ---------- sinxronlash ---------- */
 let syncing=false;
 async function sync(){
-  if(!online() || syncing) return;
-  syncing=true;
+  if(!online()||syncing) return; syncing=true;
   const sending=PENDING.slice();
   try{
-    const res=await fetch(CONFIG.SHEETS_API_URL,{
-      method:'POST',
-      headers:{'Content-Type':'text/plain;charset=utf-8'},  // preflight'siz
-      body:JSON.stringify({since:lastSeq(), ops:sending})
-    });
+    const res=await fetch(CONFIG.SHEETS_API_URL,{method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify({since:lastSeq(),ops:sending})});
     const j=await res.json();
     if(!j.ok) throw new Error(j.error||'server');
-    if(j.ops && j.ops.length){
-      const have=new Set(OPS.map(o=>o.seq));
-      j.ops.forEach(o=>{ if(!have.has(o.seq)) OPS.push(o); });
-      OPS.sort((a,b)=>a.seq-b.seq);
-    }
-    const confirmed=new Set(OPS.map(o=>o.uid));
-    PENDING=PENDING.filter(o=>!confirmed.has(o.uid));
+    if(j.ops&&j.ops.length){ const have=new Set(OPS.map(o=>o.seq));
+      j.ops.forEach(o=>{ if(!have.has(o.seq)) OPS.push(o); }); OPS.sort((a,b)=>a.seq-b.seq); }
+    const done=new Set(OPS.map(o=>o.uid)); PENDING=PENDING.filter(o=>!done.has(o.uid));
     SYNC='ok'; persist(); rebuild(); softRender();
-  }catch(e){
-    SYNC='off'; softRender();
-  }finally{ syncing=false; }
+  }catch(e){ SYNC='off'; softRender(); }
+  finally{ syncing=false; }
 }
-/* Yozayotgan paytda ekranni buzmaslik uchun ehtiyotkor render */
 function softRender(){
   const modal=document.getElementById('scrim')||document.getElementById('scanScrim');
-  const typing=document.activeElement && ['INPUT','SELECT'].includes(document.activeElement.tagName);
-  if(modal||typing){ updateSyncBadge(); return; }
-  render();
+  const typing=document.activeElement&&['INPUT','SELECT'].includes(document.activeElement.tagName);
+  if(modal||typing){ updateSyncBadge(); return; } render();
 }
-setInterval(()=>{ if(CURRENT) sync(); }, CONFIG.POLL_MS);
-window.addEventListener('online', sync);
+setInterval(()=>{ if(CURRENT) sync(); },CONFIG.POLL_MS);
+window.addEventListener('online',sync);
 
 /* ---------- pul / sana ---------- */
-function money(n){
-  n=Math.round(n||0);
-  const s=Math.abs(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g," ");
-  return (n<0?'-':'')+s;
-}
-function businessDay(d){
-  const x=d?new Date(d):new Date();
+function money(n){ n=Math.round(n||0);
+  const s=Math.abs(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g," "); return (n<0?'-':'')+s; }
+function businessDay(d){ const x=d?new Date(d):new Date();
   if(x.getHours()<CONFIG.BUSINESS_DAY_CUTOFF_HOUR) x.setDate(x.getDate()-1);
-  const p=n=>String(n).padStart(2,'0');
-  return x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate());
-}
+  const p=n=>String(n).padStart(2,'0'); return x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate()); }
 const todayBiz=()=>businessDay();
 const prettyDate=iso=>{const[a,b,c]=iso.split('-');return c+'/'+b+'/'+a;};
 const MONTHS_UZ=["Yanvar","Fevral","Mart","Aprel","May","Iyun","Iyul","Avgust","Sentabr","Oktabr","Noyabr","Dekabr"];
 
-function balance(safe,method){
-  let s=0; ST.ledger.forEach(e=>{ if(e.safe===safe&&e.method===method) s+=(e.dir==='in'?e.amount:-e.amount); });
-  return s;
-}
-function debtTotals(){
-  let pc=0,bar=0;
-  ST.debts.forEach(d=>{ if(d.status!=='closed'){ pc+=d.pc-d.paidPc; bar+=d.bar-d.paidBar; } });
-  return {pc,bar,total:pc+bar};
-}
-function activeDebtors(){
+function balance(safe,method){ let s=0;
+  ST.ledger.forEach(e=>{ if(e.safe===safe&&e.method===method) s+=(e.dir==='in'?e.amount:-e.amount); }); return s; }
+function debtOutstanding(){ let g=0,p=0;
+  ST.debtGiven.forEach(d=>g+=d.amount); ST.debtPaid.forEach(d=>p+=d.amount); return g-p; }
+function perPersonDebt(){
   const m={};
-  ST.debts.forEach(d=>{ if(d.status==='closed')return;
-    if(!m[d.debtor]) m[d.debtor]={debtor:d.debtor,pc:0,bar:0};
-    m[d.debtor].pc+=d.pc-d.paidPc; m[d.debtor].bar+=d.bar-d.paidBar; });
-  return Object.values(m).filter(x=>x.pc+x.bar>0.5);
+  const key=n=>n&&n.trim()?n.trim():"Noma'lum";
+  ST.debtGiven.forEach(d=>{ const k=key(d.name); (m[k]=m[k]||{name:k,given:0,paid:0,rows:[]});
+    m[k].given+=d.amount; m[k].rows.push({date:d.date,type:'in',amount:d.amount,by:d.by}); });
+  ST.debtPaid.forEach(d=>{ const k=key(d.name); (m[k]=m[k]||{name:k,given:0,paid:0,rows:[]});
+    m[k].paid+=d.amount; m[k].rows.push({date:d.date,type:'out',amount:d.amount,by:d.by,method:d.method}); });
+  return Object.values(m).map(x=>{ x.remaining=x.given-x.paid; x.rows.sort((a,b)=>a.date<b.date?-1:1); return x; });
 }
+function debtorsWithBalance(){ return perPersonDebt().filter(x=>x.remaining>0.5).sort((a,b)=>b.remaining-a.remaining); }
 
 /* ---------- sessiya ---------- */
 let CURRENT=null;
@@ -378,6 +341,7 @@ const isAdmin=()=>CURRENT&&CURRENT.role==='admin';
 const I={
   cash:`<svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 9h.01M18 15h.01"/></svg>`,
   card:`<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M6 15h4"/></svg>`,
+  debt:`<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`,
   cal:`<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>`,
   plus:`<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>`,
   scan:`<svg viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>`,
@@ -391,7 +355,6 @@ const I={
   chev:`<svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>`,
   pc:`<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`,
   bar:`<svg viewBox="0 0 24 24"><path d="M6 3h12l-1 6a5 5 0 0 1-10 0z"/><path d="M12 15v5M8 21h8"/></svg>`,
-  debt:`<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`,
   logout:`<svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>`,
   x:`<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>`
 };
@@ -404,8 +367,8 @@ let TAB='PC', PICK={add:'cash',sell:'cash',pay:'cash'};
 
 function render(){
   if(!CURRENT){ renderLogin(); return; }
-  if(TAB==='SET' && !isAdmin()) TAB='PC';
-  app.innerHTML = headerHTML() + `<main>${tabHTML()}</main>` + fabHTML() + navHTML();
+  if(TAB==='SET'&&!isAdmin()) TAB='PC';
+  app.innerHTML=headerHTML()+`<main>${tabHTML()}</main>`+navHTML();
   PICK.add='cash';
 }
 function syncBadgeHTML(){
@@ -414,59 +377,87 @@ function syncBadgeHTML(){
   if(PENDING.length) return `<div class="sync pending"><span class="d"></span>${PENDING.length}</div>`;
   return `<div class="sync"><span class="d"></span>Sinxron</div>`;
 }
-function updateSyncBadge(){ const el=document.getElementById('syncbox'); if(el) el.innerHTML=syncBadgeHTML(); }
+function updateSyncBadge(){ const el=document.getElementById('syncbox'); if(el)el.innerHTML=syncBadgeHTML(); }
 function headerHTML(){
-  const t={PC:'PC — Kassa',BAR:'Bar',DEBT:'Qarz',SET:'Sozlamalar'};
-  return `<header>
-    <div><div class="htitle">${t[TAB]}</div><div id="syncbox" style="margin-top:6px">${syncBadgeHTML()}</div></div>
+  const t={PC:'PC — Kassa',BAR:'Bar',SET:'Sozlamalar'};
+  return `<header><div><div class="htitle">${t[TAB]}</div>
+      <div id="syncbox" style="margin-top:6px">${syncBadgeHTML()}</div></div>
     <div style="display:flex;align-items:center;gap:10px">
       <div class="who"><b>${esc(CURRENT.username)}</b>${isAdmin()?'Administrator':'Foydalanuvchi'}</div>
-      <button class="icon-btn" onclick="logout()">${I.logout}</button>
-    </div></header>`;
+      <button class="icon-btn" onclick="logout()">${I.logout}</button></div></header>`;
 }
 function navHTML(){
   const it=(id,ic,l)=>`<button class="${TAB===id?'on':''}" onclick="go('${id}')">${ic}<span>${l}</span></button>`;
-  return `<nav>${it('PC',I.pc,'PC')}${it('BAR',I.bar,'Bar')}${it('DEBT',I.debt,'Qarz')}${isAdmin()?it('SET',I.gear,'Sozlamalar'):''}</nav>`;
+  return `<nav>${it('PC',I.pc,'PC')}${it('BAR',I.bar,'Bar')}${isAdmin()?it('SET',I.gear,'Sozlamalar'):''}</nav>`;
 }
 function go(t){ TAB=t; render(); }
-function fabHTML(){
-  if(TAB==='BAR') return `<button class="fab scan" onclick="openSell()">${I.scan}</button>`;
-  if(TAB==='DEBT') return `<div class="fab-group"><button class="fab pay" onclick="openPayDebt()">${I.money}</button>
-    <button class="fab" onclick="openRecordDebt()">${I.plus}</button></div>`;
-  return '';
-}
-function tabHTML(){
-  if(TAB==='PC') return balancesHTML('PC')+addPanelHTML('PC');
-  if(TAB==='BAR') return barTab();
-  if(TAB==='DEBT') return debtTab();
-  return setTab();
+function tabHTML(){ if(TAB==='PC')return pcTab(); if(TAB==='BAR')return barTab(); return setTab(); }
+
+/* ---------- PC ---------- */
+function pcTab(){
+  const c=balance('PC','cash'), k=balance('PC','card'), d=debtOutstanding(), t=c+k+d;
+  const box=(cls,dot,lbl,val,tap)=>`<button class="bal ${cls}" ${tap?`onclick="${tap}"`:'disabled style="opacity:1"'}>
+      ${tap?'<span class="tap">›</span>':''}
+      <span class="lbl"><span class="dot"></span>${lbl}</span>
+      <span class="amt num">${money(val)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>`;
+  return `<div class="balances">
+      ${box('cash','','Naqd',c,"openWithdraw('PC','cash')")}
+      ${box('card','','Karta',k,"openWithdraw('PC','card')")}
+      ${box('debt','','Qarz',d,"openDebtList()")}
+      ${box('total','','Jami',t,'')}
+    </div>
+    ${addPanelHTML('PC',true)}
+    <button class="paydebt-btn" onclick="openPayback()">${I.money} Qarzni to'lash</button>`;
 }
 
-/* ---------- balans + qo'shish ---------- */
-function balancesHTML(safe){
-  const c=balance(safe,'cash'), k=balance(safe,'card');
+/* ---------- Bar ---------- */
+function barTab(){
+  const c=balance('BAR','cash'), k=balance('BAR','card'), t=c+k;
+  const rows=ST.products.length?ST.products.map(p=>`<div class="lrow">
+      <div class="thumb">${p.photo?`<img src="${p.photo}" style="width:100%;height:100%;object-fit:cover"/>`:'rasm'}</div>
+      <div class="meta"><div class="nm">${esc(p.name)}</div>
+        <div class="sub num">${money(p.price)} ${CONFIG.CURRENCY} · ${esc(p.barcode)}</div></div>
+      <div class="qty num ${p.qty<=CONFIG.LOW_STOCK?'low':''}">${p.qty} dona</div></div>`).join('')
+    :`<div class="empty">Ombor bo'sh. + tugma bilan mahsulot qo'shing.</div>`;
   return `<div class="balances">
-    <button class="bal cash" onclick="openWithdraw('${safe}','cash')"><span class="tap">olish ›</span>
-      <span class="lbl"><span class="dot"></span>Naqd</span>
-      <span class="amt num">${money(c)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
-    <button class="bal card" onclick="openWithdraw('${safe}','card')"><span class="tap">olish ›</span>
-      <span class="lbl"><span class="dot"></span>Karta</span>
-      <span class="amt num">${money(k)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
-  </div>`;
+      <button class="bal cash" onclick="openWithdraw('BAR','cash')"><span class="tap">›</span>
+        <span class="lbl"><span class="dot"></span>Naqd</span>
+        <span class="amt num">${money(c)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
+      <button class="bal card" onclick="openWithdraw('BAR','card')"><span class="tap">›</span>
+        <span class="lbl"><span class="dot"></span>Karta</span>
+        <span class="amt num">${money(k)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
+      <button class="bal total span2" disabled style="opacity:1">
+        <span class="lbl"><span class="dot"></span>Jami</span>
+        <span class="amt num">${money(t)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
+    </div>
+    <button class="scan-tile" onclick="openSell()">
+      <div class="ic">${I.scan}</div>
+      <div><b>Sotish — skaner</b><span>Skaner qiling yoki mahsulot nomini yozing</span></div></button>
+    ${addPanelHTML('BAR',false)}
+    <div class="plus-row" style="margin-top:20px"><div class="section-label" style="margin:0">Ombor</div>
+      ${isAdmin()?`<button class="plus-btn" onclick="openRegister()">${I.plus} Mahsulot</button>`:''}</div>
+    <div class="list">${rows}</div>`;
 }
-function addPanelHTML(safe){
+
+/* ---------- qo'shish paneli ---------- */
+function addPanelHTML(safe,withDebt){
+  const debtOpt=withDebt?`<button class="opt debt" id="add_debt" onclick="pickMethod('add','debt')">${I.debt}<span>QARZ</span></button>`:'';
   return `<div class="panel"><h3>Kassaga qo'shish</h3>
     <input class="bigamt num" id="add_amt" inputmode="numeric" placeholder="0" oninput="fmtInput(this)"/>
-    <div class="seg mt">
+    <div class="seg mt ${withDebt?'method3':''}">
       <button class="opt cash on" id="add_cash" onclick="pickMethod('add','cash')">${I.cash}<span>NAQD</span></button>
-      <button class="opt card" id="add_card" onclick="pickMethod('add','card')">${I.card}<span>KARTA</span></button></div>
+      <button class="opt card" id="add_card" onclick="pickMethod('add','card')">${I.card}<span>KARTA</span></button>
+      ${debtOpt}</div>
+    <div id="add_namewrap" class="field hidden" style="margin-top:12px"><label>Qarzdor ismi (ixtiyoriy — keyin ham qo'shsa bo'ladi)</label>
+      <input class="inp" id="add_name" list="add_names" placeholder="Ism (bo'sh qoldirsa ham bo'ladi)"/>
+      <datalist id="add_names">${[...new Set(ST.debtGiven.map(d=>d.name).filter(Boolean))].map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
     <div class="row mt"><label class="datepick">${I.cal}<input type="date" id="add_date" value="${todayBiz()}"/></label></div>
     <button class="btn block" style="margin-top:12px" onclick="doAdd('${safe}')">Saqlash</button></div>`;
 }
 function pickMethod(g,m){
   PICK[g]=m;
-  const c=document.getElementById(g+'_cash'), k=document.getElementById(g+'_card');
-  if(c&&k){ c.classList.toggle('on',m==='cash'); k.classList.toggle('on',m==='card'); }
+  ['cash','card','debt'].forEach(x=>{ const el=document.getElementById(g+'_'+x); if(el) el.classList.toggle('on',m===x); });
+  if(g==='add'){ const nw=document.getElementById('add_namewrap'); if(nw) nw.classList.toggle('hidden',m!=='debt'); }
 }
 function fmtInput(el){ const r=el.value.replace(/\D/g,''); el.value=r?money(parseInt(r,10)):''; }
 function readAmt(el){ return parseInt((el.value||'').replace(/\D/g,''),10)||0; }
@@ -474,8 +465,14 @@ function doAdd(safe){
   const amt=readAmt(document.getElementById('add_amt'));
   const date=document.getElementById('add_date').value||todayBiz();
   if(amt<=0){ toast('Summani kiriting'); return; }
-  pushOp('money',{safe,method:PICK.add,dir:'in',amount:amt,date});
-  toast('Saqlandi ✓');
+  if(PICK.add==='debt'){
+    const name=(document.getElementById('add_name')||{}).value?.trim()||'';
+    pushOp('money',{safe:'PC',method:'debt',dir:'in',amount:amt,date,name});
+    toast('Qarz yozildi ✓');
+  } else {
+    pushOp('money',{safe,method:PICK.add,dir:'in',amount:amt,date});
+    toast('Saqlandi ✓');
+  }
 }
 
 /* ---------- olish ---------- */
@@ -484,7 +481,7 @@ function openWithdraw(safe,method){
   sheet(`<h2>Kassadan olish</h2>
     <p class="desc">${method==='cash'?'Naqd':'Karta'} · hozir: <b class="num">${money(cur)} ${CONFIG.CURRENCY}</b></p>
     <input class="bigamt num" id="w_amt" inputmode="numeric" placeholder="0" oninput="fmtInput(this)"/>
-    <div class="field" style="margin-top:14px"><label>Sabab</label>
+    <div class="field" style="margin-top:14px"><label>Sabab / kategoriya</label>
       <select class="inp" id="w_reason" onchange="wReason()">${ST.reasons.map(r=>`<option>${esc(r)}</option>`).join('')}
       ${isAdmin()?'<option value="__new">+ Yangi sabab...</option>':''}</select></div>
     <div id="w_newwrap" class="field hidden"><label>Yangi sabab</label><input class="inp" id="w_new" placeholder="Sabab nomi"/></div>
@@ -498,40 +495,60 @@ function doWithdraw(safe,method){
   const amt=readAmt(document.getElementById('w_amt'));
   if(amt<=0){ toast('Summani kiriting'); return; }
   let reason=document.getElementById('w_reason').value;
-  if(reason==='__new'){
-    reason=document.getElementById('w_new').value.trim();
-    if(!reason){ toast('Sababni yozing'); return; }
-    pushOp('reason_add',{reason});   // hammaga ochiladi
-  }
+  if(reason==='__new'){ reason=document.getElementById('w_new').value.trim();
+    if(!reason){ toast('Sababni yozing'); return; } pushOp('reason_add',{reason}); }
   const date=document.getElementById('w_date').value||todayBiz();
-  closeSheet();
-  pushOp('money',{safe,method,dir:'out',amount:amt,date,reason});
-  toast('Olindi ✓');
+  closeSheet(); pushOp('money',{safe,method,dir:'out',amount:amt,date,reason}); toast('Olindi ✓');
 }
 
-/* =====================================================================
-   BAR
-   ===================================================================== */
-function barTab(){
-  const rows=ST.products.length? ST.products.map(p=>`<div class="lrow">
-      <div class="thumb">${p.photo?`<img src="${p.photo}" style="width:100%;height:100%;object-fit:cover"/>`:'rasm'}</div>
-      <div class="meta"><div class="nm">${esc(p.name)}</div>
-        <div class="sub num">${money(p.price)} ${CONFIG.CURRENCY} · ${esc(p.barcode)}</div></div>
-      <div class="qty num ${p.qty<=CONFIG.LOW_STOCK?'low':''}">${p.qty} dona</div></div>`).join('')
-    : `<div class="empty">Ombor bo'sh. + tugma bilan mahsulot qo'shing.</div>`;
-  return balancesHTML('BAR')+addPanelHTML('BAR')+`
-    <div class="plus-row" style="margin-top:20px"><div class="section-label" style="margin:0">Ombor</div>
-      ${isAdmin()?`<button class="plus-btn" onclick="openRegister()">${I.plus} Mahsulot</button>`:''}</div>
-    <div class="list">${rows}</div>
-    <div class="banner">Sotish uchun pastdagi ko'k skaner tugmasini bosing.</div>`;
+/* ---------- qarz ro'yxati (info) ---------- */
+function openDebtList(){
+  const l=debtorsWithBalance();
+  sheet(`<h2>Qarzdorlar</h2>
+    <p class="desc">Jami qarz: <b class="num" style="color:var(--warn)">${money(debtOutstanding())} ${CONFIG.CURRENCY}</b></p>
+    <div class="list">${l.length?l.map(d=>`<div class="lrow"><div class="meta"><div class="nm">${esc(d.name)}</div>
+      <div class="sub num">berilgan ${money(d.given)} · to'langan ${money(d.paid)}</div></div>
+      <div class="qty num" style="color:var(--warn)">${money(d.remaining)}</div></div>`).join('')
+      :`<div class="empty">Faol qarzdor yo'q</div>`}</div>
+    <div class="actions"><button class="btn ghost" onclick="closeSheet()">Yopish</button>
+      <button class="btn" onclick="openPayback()">Qarzni to'lash</button></div>`);
 }
 
-/* ----- mahsulot qo'shish ----- */
+/* ---------- qarzni to'lash ---------- */
+function openPayback(){
+  const l=debtorsWithBalance(); PICK.pay='cash';
+  sheet(`<h2>Qarzni to'lash</h2>
+    <div class="field"><label>Qarzdor</label>
+      <input class="inp" id="pb_name" list="pb_names" placeholder="Ism tanlang yoki yozing" oninput="pbHint()"/>
+      <datalist id="pb_names">${l.map(d=>`<option value="${esc(d.name)}">${money(d.remaining)}</option>`).join('')}</datalist>
+      <div class="money-note" id="pb_hint"></div></div>
+    <div class="field"><label>Summa</label>
+      <input class="bigamt num" id="pb_amt" inputmode="numeric" placeholder="0" oninput="fmtInput(this)"/></div>
+    <div class="seg"><button class="opt cash on" id="pay_cash" onclick="pickMethod('pay','cash')">${I.cash}<span>NAQD</span></button>
+      <button class="opt card" id="pay_card" onclick="pickMethod('pay','card')">${I.card}<span>KARTA</span></button></div>
+    <div class="row mt"><label class="datepick">${I.cal}<input type="date" id="pb_date" value="${todayBiz()}"/></label></div>
+    <div class="actions"><button class="btn ghost" onclick="closeSheet()">Bekor</button>
+      <button class="btn" onclick="doPayback()">Tasdiqlash</button></div>`);
+}
+function pbHint(){
+  const n=document.getElementById('pb_name').value.trim();
+  const d=perPersonDebt().find(x=>x.name.toLowerCase()===n.toLowerCase());
+  document.getElementById('pb_hint').textContent=d?('Qoldiq: '+money(d.remaining)+' '+CONFIG.CURRENCY):'';
+}
+function doPayback(){
+  const name=document.getElementById('pb_name').value.trim();
+  const amt=readAmt(document.getElementById('pb_amt'));
+  if(!name){ toast('Qarzdorni tanlang'); return; }
+  if(amt<=0){ toast('Summani kiriting'); return; }
+  const date=document.getElementById('pb_date').value||todayBiz();
+  closeSheet(); pushOp('debt_pay',{name,amount:amt,method:PICK.pay,date}); toast("To'landi ✓ "+money(amt));
+}
+
+/* ---------- mahsulot qo'shish ---------- */
 let __photo='';
 function openRegister(){
   __photo='';
-  sheet(`<h2>Mahsulot qo'shish</h2>
-    <p class="desc">Shtrix-kodni skaner qiling yoki qo'lda kiriting.</p>
+  sheet(`<h2>Mahsulot qo'shish</h2><p class="desc">Shtrix-kodni skaner qiling yoki qo'lda kiriting.</p>
     <div class="field"><label>Shtrix-kod</label>
       <div class="row"><input class="inp" id="reg_bc" placeholder="Shtrix-kod" inputmode="numeric" oninput="regLookup()"/>
       <button class="icon-btn" onclick="scanInto('reg_bc')">${I.scan}</button></div></div>
@@ -541,19 +558,15 @@ function openRegister(){
   regLookup();
 }
 function regLookup(){
-  const bc=document.getElementById('reg_bc').value.trim();
-  const dyn=document.getElementById('reg_dyn');
+  const bc=document.getElementById('reg_bc').value.trim(); const dyn=document.getElementById('reg_dyn');
   const ex=ST.products.find(p=>p.barcode===bc);
-  if(ex){
-    dyn.innerHTML=`<div class="banner">Mavjud: <b>${esc(ex.name)}</b> — hozir ${ex.qty} dona</div>
+  if(ex){ dyn.innerHTML=`<div class="banner">Mavjud: <b>${esc(ex.name)}</b> — hozir ${ex.qty} dona</div>
       <div class="field"><label>Qo'shiladigan soni</label>
         <div class="row"><input class="inp num" id="reg_qty" inputmode="numeric" value="1"/>
         <button class="icon-btn" onclick="scanCount()">${I.scan}</button></div>
         <div class="scan-feed" id="reg_feed">Har skan = +1</div></div>`;
-  } else if(bc){
-    dyn.innerHTML=`<div class="field"><label>Nomi</label><input class="inp" id="reg_name" placeholder="Mahsulot nomi"/></div>
-      <div class="field"><label>Rasm</label>
-        <input type="file" accept="image/*" capture="environment" onchange="readPhoto(this)"/>
+  } else if(bc){ dyn.innerHTML=`<div class="field"><label>Nomi</label><input class="inp" id="reg_name" placeholder="Mahsulot nomi"/></div>
+      <div class="field"><label>Rasm</label><input type="file" accept="image/*" capture="environment" onchange="readPhoto(this)"/>
         <img id="reg_prev" style="margin-top:8px;max-height:110px;border-radius:10px;display:none"/></div>
       <div class="field"><label>Narx (${CONFIG.CURRENCY})</label>
         <input class="inp num" id="reg_price" inputmode="numeric" placeholder="0" oninput="fmtInput(this)"/></div>
@@ -564,60 +577,43 @@ function regLookup(){
   } else dyn.innerHTML='';
 }
 function readPhoto(input){
-  const f=input.files[0]; if(!f) return;
-  const r=new FileReader();
+  const f=input.files[0]; if(!f)return; const r=new FileReader();
   r.onload=e=>{ const img=new Image();
-    img.onload=()=>{
-      const c=document.createElement('canvas'); const max=260;
+    img.onload=()=>{ const c=document.createElement('canvas'); const max=260;
       let w=img.width,h=img.height; const s=Math.min(1,max/Math.max(w,h)); w=Math.round(w*s); h=Math.round(h*s);
       c.width=w;c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
-      let q=0.6, data=c.toDataURL('image/jpeg',q);
-      while(data.length>40000 && q>0.25){ q-=0.1; data=c.toDataURL('image/jpeg',q); }
-      __photo=data;
-      const pv=document.getElementById('reg_prev'); if(pv){pv.src=data;pv.style.display='block';}
-    };
+      let q=0.6,data=c.toDataURL('image/jpeg',q);
+      while(data.length>40000&&q>0.25){ q-=0.1; data=c.toDataURL('image/jpeg',q); }
+      __photo=data; const pv=document.getElementById('reg_prev'); if(pv){pv.src=data;pv.style.display='block';} };
     img.src=e.target.result; };
   r.readAsDataURL(f);
 }
-function scanCount(){
-  openScanner("Skaner qiling — har skan +1", code=>{
-    const el=document.getElementById('reg_qty'); if(!el)return;
-    el.value=(parseInt(el.value||'0',10)||0)+1;
-    const fb=document.getElementById('reg_feed'); if(fb) fb.textContent='✓ '+code+' (+1)';
-  },{keepOpen:true});
-}
+function scanCount(){ openScanner('Skaner qiling — har skan +1',code=>{
+    const el=document.getElementById('reg_qty'); if(!el)return; el.value=(parseInt(el.value||'0',10)||0)+1;
+    const fb=document.getElementById('reg_feed'); if(fb)fb.textContent='✓ '+code+' (+1)'; },{keepOpen:true}); }
 function doRegister(){
-  const bc=document.getElementById('reg_bc').value.trim();
-  if(!bc){ toast('Shtrix-kod kiriting'); return; }
-  const qEl=document.getElementById('reg_qty');
-  const qty=parseInt((qEl&&qEl.value)||'0',10)||0;
+  const bc=document.getElementById('reg_bc').value.trim(); if(!bc){ toast('Shtrix-kod kiriting'); return; }
+  const qEl=document.getElementById('reg_qty'); const qty=parseInt((qEl&&qEl.value)||'0',10)||0;
   if(qty<=0){ toast("Soni noto'g'ri"); return; }
   const ex=ST.products.find(p=>p.barcode===bc);
-  if(!ex){
-    const nEl=document.getElementById('reg_name');
-    const name=(nEl&&nEl.value.trim())||'';
+  if(!ex){ const nEl=document.getElementById('reg_name'); const name=(nEl&&nEl.value.trim())||'';
     if(!name){ toast('Nomini kiriting'); return; }
     const price=readAmt(document.getElementById('reg_price'));
-    pushOp('prod_new',{barcode:bc,name,photo:__photo,price});
-  }
-  closeSheet();
-  pushOp('stock_in',{barcode:bc,qty});
-  __photo=''; toast("Omborga qo'shildi ✓");
+    pushOp('prod_new',{barcode:bc,name,photo:__photo,price}); }
+  closeSheet(); pushOp('stock_in',{barcode:bc,qty}); __photo=''; toast("Omborga qo'shildi ✓");
 }
 
-/* ----- sotish ----- */
+/* ---------- sotish ---------- */
 let CART=[];
 function openSell(){
   CART=[]; PICK.sell='cash';
-  sheet(`<h2>Sotish</h2>
-    <p class="desc">Skaner qiling yoki nomini yozing (3 harfdan). Har skan — 1 dona.</p>
+  sheet(`<h2>Sotish</h2><p class="desc">Skaner qiling yoki nomini yozing (3 harfdan). Har skan — 1 dona.</p>
     <div class="cam-wrap barcode" id="sell_cam"><div class="cam-msg">Kamerani yoqish uchun skaner tugmasi</div></div>
     <div class="scan-feed" id="sell_feed"></div>
     <div class="row" style="margin-bottom:10px">
       <input class="inp" id="sell_search" placeholder="Mahsulot nomi..." oninput="sellSearch(this.value)" autocomplete="off"/>
       <button class="icon-btn" onclick="startCamera(document.getElementById('sell_cam'),sellHit)">${I.scan}</button></div>
-    <div id="sell_sugg"></div>
-    <div class="list" id="sell_cart"></div>
+    <div id="sell_sugg"></div><div class="list" id="sell_cart"></div>
     <div class="seg" style="margin-top:14px">
       <button class="opt cash on" id="sell_cash" onclick="pickMethod('sell','cash')">${I.cash}<span>NAQD</span></button>
       <button class="opt card" id="sell_card" onclick="pickMethod('sell','card')">${I.card}<span>KARTA</span></button></div>
@@ -626,204 +622,36 @@ function openSell(){
       <button class="btn" onclick="doSell()">Tasdiqlash</button></div>`);
   renderCart();
 }
-function sellHit(code){
-  const p=ST.products.find(x=>x.barcode===code);
-  const fb=document.getElementById('sell_feed');
-  if(p){ addToCart(p.barcode); if(fb)fb.textContent='✓ '+p.name; }
-  else if(fb) fb.textContent='Topilmadi: '+code;
-}
-function sellSearch(q){
-  q=q.trim().toLowerCase(); const box=document.getElementById('sell_sugg');
+function sellHit(code){ const p=ST.products.find(x=>x.barcode===code); const fb=document.getElementById('sell_feed');
+  if(p){ addToCart(p.barcode); if(fb)fb.textContent='✓ '+p.name; } else if(fb) fb.textContent='Topilmadi: '+code; }
+function sellSearch(q){ q=q.trim().toLowerCase(); const box=document.getElementById('sell_sugg');
   if(q.length<3){ box.innerHTML=''; return; }
   const hits=ST.products.filter(p=>p.name.toLowerCase().includes(q)).slice(0,6);
-  box.innerHTML=hits.length? hits.map(p=>`<button class="lrow" style="width:100%" onclick="addToCart('${esc(p.barcode)}')">
+  box.innerHTML=hits.length?hits.map(p=>`<button class="lrow" style="width:100%" onclick="addToCart('${esc(p.barcode)}')">
     <div class="thumb">${p.photo?`<img src="${p.photo}" style="width:100%;height:100%;object-fit:cover"/>`:'—'}</div>
     <div class="meta"><div class="nm">${esc(p.name)}</div><div class="sub num">${money(p.price)} · ${p.qty} dona</div></div>
-    <div class="qty">+</div></button>`).join('') : `<div class="empty">Topilmadi</div>`;
-}
-function addToCart(bc){
-  const p=ST.products.find(x=>x.barcode===bc); if(!p)return;
-  const l=CART.find(c=>c.barcode===bc);
-  if(l) l.qty++; else CART.push({barcode:bc,name:p.name,qty:1,price:p.price});
-  const s=document.getElementById('sell_search'); if(s)s.value='';
-  const g=document.getElementById('sell_sugg'); if(g)g.innerHTML='';
-  renderCart();
-}
+    <div class="qty">+</div></button>`).join(''):`<div class="empty">Topilmadi</div>`; }
+function addToCart(bc){ const p=ST.products.find(x=>x.barcode===bc); if(!p)return;
+  const l=CART.find(c=>c.barcode===bc); if(l)l.qty++; else CART.push({barcode:bc,name:p.name,qty:1,price:p.price});
+  const s=document.getElementById('sell_search'); if(s)s.value=''; const g=document.getElementById('sell_sugg'); if(g)g.innerHTML='';
+  renderCart(); }
 function cartStep(bc,d){ const l=CART.find(c=>c.barcode===bc); if(!l)return;
-  l.qty+=d; if(l.qty<=0) CART=CART.filter(c=>c.barcode!==bc); renderCart(); }
-function renderCart(){
-  const el=document.getElementById('sell_cart'); if(!el)return;
+  l.qty+=d; if(l.qty<=0)CART=CART.filter(c=>c.barcode!==bc); renderCart(); }
+function renderCart(){ const el=document.getElementById('sell_cart'); if(!el)return;
   if(!CART.length){ el.innerHTML=`<div class="empty">Hali mahsulot qo'shilmadi</div>`; return; }
-  let t=0;
-  el.innerHTML=CART.map(c=>{ t+=c.qty*c.price; return `<div class="lrow">
+  let t=0; el.innerHTML=CART.map(c=>{ t+=c.qty*c.price; return `<div class="lrow">
     <div class="meta"><div class="nm">${esc(c.name)}</div>
       <div class="sub num">${money(c.price)} × ${c.qty} = ${money(c.price*c.qty)}</div></div>
     <div class="stepper"><button onclick="cartStep('${esc(c.barcode)}',-1)">−</button>
       <span class="n num">${c.qty}</span><button onclick="cartStep('${esc(c.barcode)}',1)">+</button></div></div>`;}).join('')
-    +`<div class="kv"><span>Jami</span><b class="num">${money(t)} ${CONFIG.CURRENCY}</b></div>`;
-}
-function doSell(){
-  if(!CART.length){ toast("Mahsulot qo'shing"); return; }
+    +`<div class="kv"><span>Jami</span><b class="num">${money(t)} ${CONFIG.CURRENCY}</b></div>`; }
+function doSell(){ if(!CART.length){ toast("Mahsulot qo'shing"); return; }
   for(const c of CART){ const p=ST.products.find(x=>x.barcode===c.barcode);
     if(!p||p.qty<c.qty){ toast('Omborda yetarli emas: '+c.name); return; } }
   const date=document.getElementById('sell_date').value||todayBiz();
   let total=0; CART.forEach(c=>total+=c.qty*c.price);
-  closeSheet();
-  pushOp('sale',{date,method:PICK.sell,total,items:CART.map(c=>({...c}))});
-  toast('Sotildi ✓ '+money(total)+' '+CONFIG.CURRENCY);
-}
-
-/* =====================================================================
-   QARZ
-   ===================================================================== */
-function debtTab(){
-  const t=debtTotals();
-  return `<div class="total-owed"><div class="t">Jami qarz (bizga)</div>
-      <div class="v num">${money(t.total)} ${CONFIG.CURRENCY}</div></div>
-    <div class="debt-top">
-      <div class="bal pc"><span class="lbl"><span class="dot"></span>PC</span>
-        <span class="amt num">${money(t.pc)}</span><span class="cur">${CONFIG.CURRENCY}</span></div>
-      <div class="bal bar"><span class="lbl"><span class="dot"></span>Bar</span>
-        <span class="amt num">${money(t.bar)}</span><span class="cur">${CONFIG.CURRENCY}</span></div></div>
-    <div class="plus-row" style="margin-top:20px"><div class="section-label" style="margin:0">Faol qarzdorlar</div>
-      <button class="plus-btn" onclick="openDebtorsList()">${I.list} Ro'yxat</button></div>
-    <div class="list">${debtorRows()}</div>`;
-}
-function debtorRows(){
-  const l=activeDebtors();
-  if(!l.length) return `<div class="empty">Faol qarzdor yo'q</div>`;
-  return l.map(d=>`<div class="lrow"><div class="meta"><div class="nm">${esc(d.debtor)}</div>
-    <div class="sub num">PC ${money(d.pc)} · Bar ${money(d.bar)}</div></div>
-    <div class="qty num">${money(d.pc+d.bar)}</div></div>`).join('');
-}
-function openDebtorsList(){
-  const l=activeDebtors();
-  sheet(`<h2>Qarzdorlar ro'yxati</h2><p class="desc">Faol qarzdorlar va summalar.</p>
-    <div class="list">${l.length?l.map(d=>`<div class="lrow"><div class="meta"><div class="nm">${esc(d.debtor)}</div>
-      <div class="sub num">PC ${money(d.pc)} · Bar ${money(d.bar)}</div></div>
-      <div class="qty num">${money(d.pc+d.bar)}</div></div>`).join(''):`<div class="empty">Bo'sh</div>`}</div>
-    <div class="actions"><button class="btn ghost" onclick="closeSheet()">Yopish</button>
-      <button class="btn" onclick="downloadDebtors()">Yuklab olish</button></div>`);
-}
-function downloadDebtors(){
-  let csv='Ism,PC,Bar,Jami\n';
-  activeDebtors().forEach(d=>csv+=`"${d.debtor}",${d.pc},${d.bar},${d.pc+d.bar}\n`);
-  dl(new Blob(["\uFEFF"+csv],{type:'text/csv'}),'qarzdorlar_'+todayBiz()+'.csv');
-  toast('Yuklandi ✓');
-}
-let DCART=[];
-function openRecordDebt(){
-  DCART=[];
-  const names=[...new Set(activeDebtors().map(d=>d.debtor))];
-  sheet(`<h2>Qarz berish</h2>
-    <div class="field"><label>Ism</label>
-      <input class="inp" id="d_name" list="d_names" placeholder="Tanlang yoki yangi ism yozing"/>
-      <datalist id="d_names">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
-    <div class="row" style="margin-bottom:12px"><label class="datepick">${I.cal}
-      <input type="date" id="d_date" value="${todayBiz()}"/></label></div>
-    <div class="field"><label>PC qarzi (${CONFIG.CURRENCY})</label>
-      <input class="inp num" id="d_pc" inputmode="numeric" placeholder="0" oninput="fmtInput(this)"/></div>
-    <div class="field"><label>Bar mahsulotlari</label>
-      <div class="cam-wrap barcode" id="d_cam"><div class="cam-msg">Kamerani yoqish uchun tugma</div></div>
-      <div class="row"><input class="inp" id="d_search" placeholder="nomini yozing..." oninput="debtSearch(this.value)" autocomplete="off"/>
-        <button class="icon-btn" onclick="startCamera(document.getElementById('d_cam'),debtHit)">${I.scan}</button></div>
-      <div id="d_sugg"></div><div class="list" id="d_cart"></div></div>
-    <div class="actions"><button class="btn ghost" onclick="closeSheet()">Bekor</button>
-      <button class="btn" onclick="doRecordDebt()">Saqlash</button></div>`);
-  renderDCart();
-}
-function debtHit(code){ const p=ST.products.find(x=>x.barcode===code); if(p) debtAdd(p.barcode); }
-function debtSearch(q){
-  q=q.trim().toLowerCase(); const b=document.getElementById('d_sugg');
-  if(q.length<3){ b.innerHTML=''; return; }
-  b.innerHTML=ST.products.filter(p=>p.name.toLowerCase().includes(q)).slice(0,6)
-    .map(p=>`<button class="lrow" style="width:100%" onclick="debtAdd('${esc(p.barcode)}')">
-      <div class="meta"><div class="nm">${esc(p.name)}</div><div class="sub num">${money(p.price)} · ${p.qty} dona</div></div>
-      <div class="qty">+</div></button>`).join('');
-}
-function debtAdd(bc){
-  const p=ST.products.find(x=>x.barcode===bc); if(!p)return;
-  const l=DCART.find(c=>c.barcode===bc); if(l)l.qty++; else DCART.push({barcode:bc,name:p.name,qty:1,price:p.price});
-  const s=document.getElementById('d_search'); if(s)s.value='';
-  const g=document.getElementById('d_sugg'); if(g)g.innerHTML='';
-  renderDCart();
-}
-function dcartStep(bc,d){ const l=DCART.find(c=>c.barcode===bc); if(!l)return;
-  l.qty+=d; if(l.qty<=0)DCART=DCART.filter(c=>c.barcode!==bc); renderDCart(); }
-function renderDCart(){
-  const el=document.getElementById('d_cart'); if(!el)return;
-  if(!DCART.length){ el.innerHTML=''; return; }
-  let t=0;
-  el.innerHTML=DCART.map(c=>{t+=c.qty*c.price; return `<div class="lrow">
-    <div class="meta"><div class="nm">${esc(c.name)}</div><div class="sub num">${money(c.price)} × ${c.qty}</div></div>
-    <div class="stepper"><button onclick="dcartStep('${esc(c.barcode)}',-1)">−</button>
-      <span class="n num">${c.qty}</span><button onclick="dcartStep('${esc(c.barcode)}',1)">+</button></div></div>`;}).join('')
-    +`<div class="kv"><span>Bar jami</span><b class="num">${money(t)}</b></div>`;
-}
-function doRecordDebt(){
-  const name=document.getElementById('d_name').value.trim();
-  if(!name){ toast('Ism kiriting'); return; }
-  const date=document.getElementById('d_date').value||todayBiz();
-  const pc=readAmt(document.getElementById('d_pc'));
-  let bar=0; DCART.forEach(c=>bar+=c.qty*c.price);
-  if(pc<=0&&bar<=0){ toast('PC yoki Bar summasini kiriting'); return; }
-  for(const c of DCART){ const p=ST.products.find(x=>x.barcode===c.barcode);
-    if(!p||p.qty<c.qty){ toast('Omborda yetarli emas: '+c.name); return; } }
-  closeSheet();
-  pushOp('debt_add',{date,debtor:name,pc,bar,items:DCART.map(c=>({...c}))});
-  toast('Qarz yozildi ✓');
-}
-function openPayDebt(){
-  const l=activeDebtors(); PICK.pay='cash';
-  sheet(`<h2>Qarzni to'lash</h2>
-    <div class="field"><label>Qarzdor</label>
-      <select class="inp" id="p_name" onchange="payFill()"><option value="">— tanlang —</option>
-      ${l.map(d=>`<option value="${esc(d.debtor)}">${esc(d.debtor)} (${money(d.pc+d.bar)})</option>`).join('')}</select></div>
-    <div class="field"><label>PC qarzi</label>
-      <input class="inp num transp" id="p_pc" inputmode="numeric" placeholder="0" oninput="fmtInput(this);payTotal()"/></div>
-    <div class="field"><label>Bar qarzi</label>
-      <input class="inp num transp" id="p_bar" inputmode="numeric" placeholder="0" oninput="fmtInput(this);payTotal()"/></div>
-    <div class="field"><label>Jami to'lov</label>
-      <input class="inp num" id="p_total" inputmode="numeric" placeholder="0" oninput="fmtInput(this)"/></div>
-    <div class="seg"><button class="opt cash on" id="pay_cash" onclick="pickMethod('pay','cash')">${I.cash}<span>NAQD</span></button>
-      <button class="opt card" id="pay_card" onclick="pickMethod('pay','card')">${I.card}<span>KARTA</span></button></div>
-    <div class="row mt"><label class="datepick">${I.cal}<input type="date" id="p_date" value="${todayBiz()}"/></label></div>
-    <div class="money-note" id="p_hint">To'liq to'lasa — faqat "Jami"ga yozing.</div>
-    <div class="actions"><button class="btn ghost" onclick="closeSheet()">Bekor</button>
-      <button class="btn" onclick="doPay()">Tasdiqlash</button></div>`);
-}
-function payFill(){
-  const d=activeDebtors().find(x=>x.debtor===document.getElementById('p_name').value);
-  const pc=document.getElementById('p_pc'), bar=document.getElementById('p_bar'), tot=document.getElementById('p_total');
-  if(!d){ pc.value=bar.value=tot.value=''; return; }
-  pc.value=money(d.pc); bar.value=money(d.bar); tot.value='';
-  pc.classList.add('transp'); bar.classList.add('transp');
-  document.getElementById('p_hint').textContent="Qarz: PC "+money(d.pc)+" · Bar "+money(d.bar)+". To'liq to'lasa faqat \"Jami\"ga yozing.";
-}
-function payTotal(){
-  const pc=document.getElementById('p_pc'), bar=document.getElementById('p_bar');
-  pc.classList.remove('transp'); bar.classList.remove('transp');
-  document.getElementById('p_total').value=money(readAmt(pc)+readAmt(bar));
-}
-function doPay(){
-  const name=document.getElementById('p_name').value;
-  const d=activeDebtors().find(x=>x.debtor===name);
-  if(!d){ toast('Qarzdorni tanlang'); return; }
-  const transp=document.getElementById('p_pc').classList.contains('transp');
-  const total=readAmt(document.getElementById('p_total'));
-  let pc=readAmt(document.getElementById('p_pc')), bar=readAmt(document.getElementById('p_bar'));
-  if(transp){                       // PC/Bar tegilmagan -> to'liq to'lov
-    if(total<=0){ toast('Summani kiriting'); return; }
-    if(total>=d.pc+d.bar){ pc=d.pc; bar=d.bar; }
-    else{ pc=Math.min(total,d.pc); bar=total-pc; }   // qisman: avval PC
-  }
-  pc=Math.min(pc,d.pc); bar=Math.min(bar,d.bar);
-  if(pc<=0&&bar<=0){ toast('Summani kiriting'); return; }
-  const date=document.getElementById('p_date').value||todayBiz();
-  closeSheet();
-  pushOp('debt_pay',{debtor:name,pc,bar,date,method:PICK.pay});
-  toast("To'landi ✓ "+money(pc+bar));
-}
+  closeSheet(); pushOp('sale',{date,method:PICK.sell,total,items:CART.map(c=>({...c}))});
+  toast('Sotildi ✓ '+money(total)+' '+CONFIG.CURRENCY); }
 
 /* =====================================================================
    SOZLAMALAR
@@ -837,11 +665,11 @@ function setTab(){
     <button onclick="openStock()"><div class="mi">${I.stock}</div>
       <div class="mt"><b>Inventarizatsiya</b><span>Ombor sanog'i · kamomad</span></div><div class="chev">${I.chev}</div></button>
     <button onclick="openReports()"><div class="mi">${I.report}</div>
-      <div class="mt"><b>Hisobot</b><span>Kunlik / oylik PDF</span></div><div class="chev">${I.chev}</div></button>
+      <div class="mt"><b>Hisobotlar</b><span>Kunlik · oylik · qarz (PDF)</span></div><div class="chev">${I.chev}</div></button>
   </div>
   <div data-install>${installBtnHTML()}</div>
   <div class="banner">Biznes-kun: har kuni ${String(CONFIG.BUSINESS_DAY_CUTOFF_HOUR).padStart(2,'0')}:00 gacha — oldingi kun hisoblanadi.<br>
-  ${online()?'Ma\'lumot Google Sheets orqali barcha qurilmalarda umumiy.':'Server ulanmagan — faqat shu qurilmada saqlanmoqda.'}</div>`;
+  ${online()?"Ma'lumot Google Sheets orqali barcha qurilmalarda umumiy.":'Server ulanmagan — faqat shu qurilmada saqlanmoqda.'}</div>`;
 }
 function openUsers(){
   sheet(`<h2>Foydalanuvchilar</h2>
@@ -851,20 +679,14 @@ function openUsers(){
     <div class="section-label">Yangi foydalanuvchi</div>
     <div class="field"><input class="inp" id="u_name" placeholder="Login" autocapitalize="off"/></div>
     <div class="field"><input class="inp" id="u_pass" placeholder="Parol"/></div>
-    <div class="field"><select class="inp" id="u_role">
-      <option value="user">Foydalanuvchi</option><option value="admin">Administrator</option></select></div>
+    <div class="field"><select class="inp" id="u_role"><option value="user">Foydalanuvchi</option><option value="admin">Administrator</option></select></div>
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Yopish</button>
       <button class="btn" onclick="addUser()">Qo'shish</button></div>`);
 }
-function addUser(){
-  const n=document.getElementById('u_name').value.trim();
-  const p=document.getElementById('u_pass').value;
-  const r=document.getElementById('u_role').value;
+function addUser(){ const n=document.getElementById('u_name').value.trim(); const p=document.getElementById('u_pass').value; const r=document.getElementById('u_role').value;
   if(!n||!p){ toast('Login va parol kiriting'); return; }
   if(ST.users.find(u=>u.username===n)){ toast('Bunday login bor'); return; }
-  pushOp('user_add',{username:n,password:p,role:r});
-  openUsers(); toast("Qo'shildi ✓");
-}
+  pushOp('user_add',{username:n,password:p,role:r}); openUsers(); toast("Qo'shildi ✓"); }
 function delUser(n){ pushOp('user_del',{username:n}); openUsers(); }
 function openPrices(){
   sheet(`<h2>Narxlarni belgilash</h2><p class="desc">Narxni o'zgartiring — avtomatik saqlanadi.</p>
@@ -872,164 +694,248 @@ function openPrices(){
       <div class="thumb">${p.photo?`<img src="${p.photo}" style="width:100%;height:100%;object-fit:cover"/>`:'—'}</div>
       <div class="meta"><div class="nm">${esc(p.name)}</div><div class="sub">${esc(p.barcode)}</div></div>
       <input class="inp num" style="width:120px;min-height:44px;text-align:right" value="${money(p.price)}"
-        inputmode="numeric" oninput="fmtInput(this)" onchange="setPrice('${esc(p.barcode)}',this.value)"/>
-    </div>`).join(''):`<div class="empty">Mahsulot yo'q</div>`}</div>
+        inputmode="numeric" oninput="fmtInput(this)" onchange="setPrice('${esc(p.barcode)}',this.value)"/></div>`).join('')
+      :`<div class="empty">Mahsulot yo'q</div>`}</div>
     <div class="actions"><button class="btn" onclick="closeSheet()">Tayyor</button></div>`);
 }
-function setPrice(bc,v){
-  pushOp('price',{barcode:bc,price:parseInt((v||'').replace(/\D/g,''),10)||0});
-  toast('Narx saqlandi ✓');
-}
+function setPrice(bc,v){ pushOp('price',{barcode:bc,price:parseInt((v||'').replace(/\D/g,''),10)||0}); toast('Narx saqlandi ✓'); }
 
-/* ----- inventarizatsiya ----- */
+/* ---------- inventarizatsiya ---------- */
 let SCOUNT=[];
 function openStock(){
   SCOUNT=[];
-  sheet(`<h2>Inventarizatsiya</h2>
-    <p class="desc">Skaner qiling. Bir mahsulot 2 marta = +2. Oxirida kamomad ko'rsatiladi.</p>
+  sheet(`<h2>Inventarizatsiya</h2><p class="desc">Skaner qiling. Bir mahsulot 2 marta = +2. Oxirida kamomad ko'rsatiladi.</p>
     <div class="cam-wrap barcode" id="st_cam"><div class="cam-msg">Kamerani yoqish uchun tugma</div></div>
     <div class="scan-feed" id="st_feed"></div>
     <button class="plus-btn" style="width:100%;justify-content:center;margin-bottom:8px"
       onclick="startCamera(document.getElementById('st_cam'),stockHit)">${I.scan} Kamerani yoqish</button>
-    <div class="row" style="margin-bottom:8px">
-      <input class="inp" id="st_manual" placeholder="qo'lda shtrix-kod" inputmode="numeric"/>
+    <div class="row" style="margin-bottom:8px"><input class="inp" id="st_manual" placeholder="qo'lda shtrix-kod" inputmode="numeric"/>
       <button class="icon-btn" onclick="stockManual()">${I.plus}</button></div>
     <div class="list" id="st_list"></div>
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Bekor</button>
       <button class="btn" onclick="stockFinish()">Yakunlash</button></div>`);
   renderStock();
 }
-function stockManual(){ const el=document.getElementById('st_manual');
-  const v=el.value.trim(); if(v){ stockHit(v); el.value=''; } }
-function stockHit(code){
-  const p=ST.products.find(x=>x.barcode===code);
-  const fb=document.getElementById('st_feed');
+function stockManual(){ const el=document.getElementById('st_manual'); const v=el.value.trim(); if(v){ stockHit(v); el.value=''; } }
+function stockHit(code){ const p=ST.products.find(x=>x.barcode===code); const fb=document.getElementById('st_feed');
   if(!p){ if(fb)fb.textContent='Topilmadi: '+code; return; }
-  const l=SCOUNT.find(x=>x.barcode===code);
-  if(l) l.counted++; else SCOUNT.push({barcode:code,name:p.name,counted:1,price:p.price,sys:p.qty});
-  if(fb)fb.textContent='✓ '+p.name+' (+1)';
-  renderStock();
-}
-function stockStep(bc,d){ const l=SCOUNT.find(x=>x.barcode===bc); if(!l)return;
-  l.counted+=d; if(l.counted<=0)SCOUNT=SCOUNT.filter(x=>x.barcode!==bc); renderStock(); }
-function renderStock(){
-  const el=document.getElementById('st_list'); if(!el)return;
+  const l=SCOUNT.find(x=>x.barcode===code); if(l)l.counted++; else SCOUNT.push({barcode:code,name:p.name,counted:1,price:p.price,sys:p.qty});
+  if(fb)fb.textContent='✓ '+p.name+' (+1)'; renderStock(); }
+function stockStep(bc,d){ const l=SCOUNT.find(x=>x.barcode===bc); if(!l)return; l.counted+=d; if(l.counted<=0)SCOUNT=SCOUNT.filter(x=>x.barcode!==bc); renderStock(); }
+function renderStock(){ const el=document.getElementById('st_list'); if(!el)return;
   el.innerHTML=SCOUNT.length?SCOUNT.map(l=>`<div class="lrow">
     <div class="meta"><div class="nm">${esc(l.name)}</div><div class="sub num">Tizimda: ${l.sys}</div></div>
     <div class="stepper"><button onclick="stockStep('${esc(l.barcode)}',-1)">−</button>
       <span class="n num">${l.counted}</span><button onclick="stockStep('${esc(l.barcode)}',1)">+</button></div></div>`).join('')
-    :`<div class="empty">Skaner qiling</div>`;
-}
+    :`<div class="empty">Skaner qiling</div>`; }
 function stockFinish(){
   const counted=SCOUNT.slice();
-  const diffs=ST.products.map(p=>{
-    const c=counted.find(x=>x.barcode===p.barcode); const cn=c?c.counted:0;
-    return {barcode:p.barcode,name:p.name,sys:p.qty,counted:cn,diff:p.qty-cn,price:p.price};
-  }).filter(d=>d.diff!==0);
-  let lost=0; diffs.forEach(d=>{ if(d.diff>0) lost+=d.diff*d.price; });
-  const rows=diffs.length? diffs.map(d=>`<div class="kv"><span>${esc(d.name)}<br>
+  const diffs=ST.products.map(p=>{ const c=counted.find(x=>x.barcode===p.barcode); const cn=c?c.counted:0;
+    return {barcode:p.barcode,name:p.name,sys:p.qty,counted:cn,diff:p.qty-cn,price:p.price}; }).filter(d=>d.diff!==0);
+  let lost=0; diffs.forEach(d=>{ if(d.diff>0)lost+=d.diff*d.price; });
+  const rows=diffs.length?diffs.map(d=>`<div class="kv"><span>${esc(d.name)}<br>
       <small style="color:var(--faint)">tizim ${d.sys} · sanoq ${d.counted}</small></span>
       <b class="num" style="color:${d.diff>0?'var(--danger)':'var(--ok)'}">
       ${d.diff>0?'−'+d.diff+' dona · '+money(d.diff*d.price):'+'+(-d.diff)+' dona'}</b></div>`).join('')
       +`<div class="kv" style="margin-top:6px"><span><b>Kamomad qiymati</b></span>
         <b class="num" style="color:var(--danger)">${money(lost)} ${CONFIG.CURRENCY}</b></div>`
-    : `<div class="empty" style="color:var(--ok)">Kamomad yo'q ✓</div>`;
+    :`<div class="empty" style="color:var(--ok)">Kamomad yo'q ✓</div>`;
   window.__counted=counted;
   sheet(`<h2>Natija</h2><p class="desc">Tizim − sanoq.</p>${rows}
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Yopish</button>
       <button class="btn" onclick="stockApply()">Omborni to'g'irlash</button></div>`);
 }
-function stockApply(){
-  const counts=(window.__counted||[]).map(c=>({barcode:c.barcode,qty:c.counted}));
-  if(!counts.length){ closeSheet(); return; }
-  closeSheet();
-  pushOp('stock_set',{counts});
-  toast('Ombor yangilandi ✓');
-}
+function stockApply(){ const counts=(window.__counted||[]).map(c=>({barcode:c.barcode,qty:c.counted}));
+  if(!counts.length){ closeSheet(); return; } closeSheet(); pushOp('stock_set',{counts}); toast('Ombor yangilandi ✓'); }
 
-/* ----- hisobot ----- */
+/* =====================================================================
+   HISOBOTLAR (PDF)
+   ===================================================================== */
 function openReports(){
-  sheet(`<h2>Hisobot</h2><p class="desc">PDF yaratiladi va yuklab olinadi.</p>
-    <div class="field"><label>Kunlik</label><div class="row">
+  sheet(`<h2>Hisobotlar</h2><p class="desc">PDF yaratiladi va yuklab olinadi.</p>
+    <div class="field"><label>Kunlik (batafsil)</label><div class="row">
       <input type="date" class="inp" id="r_day" value="${todayBiz()}"/>
       <button class="btn" style="flex:0 0 auto;padding:14px 18px" onclick="reportDaily()">PDF</button></div></div>
-    <div class="field"><label>Oylik</label><div class="row">
+    <div class="field"><label>Oylik (kunlar + kategoriyalar)</label><div class="row">
       <input type="month" class="inp" id="r_month" value="${todayBiz().slice(0,7)}"/>
       <button class="btn" style="flex:0 0 auto;padding:14px 18px" onclick="reportMonthly()">PDF</button></div></div>
+    <div class="field"><label>Qarz hisoboti (shaxslar bo'yicha)</label>
+      <button class="btn block" onclick="reportDebt()">Qarz PDF</button></div>
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Yopish</button></div>`);
 }
-function collect(f){
-  const r={inCashPC:0,inCardPC:0,outPC:0,inCashBar:0,inCardBar:0,outBar:0,sales:0,cnt:0,debt:0};
-  ST.ledger.filter(e=>f(e.date)).forEach(e=>{
-    if(e.safe==='PC'){ if(e.dir==='out')r.outPC+=e.amount; else if(e.method==='cash')r.inCashPC+=e.amount; else r.inCardPC+=e.amount; }
-    else { if(e.dir==='out')r.outBar+=e.amount; else if(e.method==='cash')r.inCashBar+=e.amount; else r.inCardBar+=e.amount; }
-  });
-  ST.sales.filter(s=>f(s.date)).forEach(s=>{ r.sales+=s.total; r.cnt++; });
-  ST.debts.filter(d=>f(d.date)).forEach(d=>{ r.debt+=d.pc+d.bar; });
-  return r;
+/* --- PDF yordamchilari --- */
+function newDoc(){ const {jsPDF}=window.jspdf; return new jsPDF({unit:'mm',format:'a4'}); }
+function pdfCtx(doc){ return {doc,y:0}; }
+function pHeader(c,title,sub){ c.doc.setFont(undefined,'bold').setFontSize(16); c.doc.text(title,14,18);
+  c.doc.setFont(undefined,'normal').setFontSize(10).setTextColor(120); c.doc.text(sub,14,24.5); c.doc.setTextColor(0); c.y=32; }
+function pBreak(c,need){ if(c.y+(need||6)>288){ c.doc.addPage(); c.y=18; } }
+function pSection(c,t){ pBreak(c,12); c.y+=2; c.doc.setFont(undefined,'bold').setFontSize(11); c.doc.text(t,14,c.y); c.y+=2;
+  c.doc.setDrawColor(210); c.doc.line(14,c.y,196,c.y); c.y+=5; c.doc.setFont(undefined,'normal'); }
+function pRow(c,cols,vals,bold){
+  pBreak(c,6); c.doc.setFont(undefined,bold?'bold':'normal').setFontSize(9);
+  cols.forEach((col,i)=>{ let v=String(vals[i]??''); const align=col.a==='r'?'right':'left';
+    if(col.w){ /* truncate */ while(v.length>3&&c.doc.getTextWidth(v)>col.w){ v=v.slice(0,-2); } }
+    c.doc.text(v,col.x,c.y,{align}); });
+  c.y+=5;
 }
-function makePDF(title,sub,r){
-  const {jsPDF}=window.jspdf; const doc=new jsPDF(); let y=20;
-  doc.setFontSize(18); doc.text("O'yin klubi — Kassa hisoboti",14,y); y+=8;
-  doc.setFontSize(12); doc.setTextColor(120); doc.text(title+'  ·  '+sub,14,y); y+=10; doc.setTextColor(0);
-  doc.setFontSize(11);
-  const line=(l,v)=>{ doc.text(l,14,y); doc.text(v+' '+CONFIG.CURRENCY,196,y,{align:'right'}); y+=7; };
-  const head=t=>{ y+=3; doc.setFont(undefined,'bold'); doc.text(t,14,y); y+=7; doc.setFont(undefined,'normal'); };
-  head('PC kassa'); line('Naqd kirim',money(r.inCashPC)); line('Karta kirim',money(r.inCardPC)); line('Chiqim',money(r.outPC));
-  head('Bar kassa'); line('Naqd kirim',money(r.inCashBar)); line('Karta kirim',money(r.inCardBar)); line('Chiqim',money(r.outBar));
-  line('Sotuvlar ('+r.cnt+' ta)',money(r.sales));
-  head('Qarz'); line('Berilgan qarz',money(r.debt));
-  y+=4; doc.setDrawColor(200); doc.line(14,y,196,y); y+=8;
-  const tin=r.inCashPC+r.inCardPC+r.inCashBar+r.inCardBar, tout=r.outPC+r.outBar;
-  doc.setFont(undefined,'bold'); doc.setFontSize(12);
-  line('Jami kirim',money(tin)); line('Jami chiqim',money(tout)); line('Sof',money(tin-tout));
-  return doc;
-}
+function pTotal(c,label,val){ pBreak(c,6); c.doc.setFont(undefined,'bold').setFontSize(10);
+  c.doc.text(label,14,c.y); c.doc.text(money(val)+' '+CONFIG.CURRENCY,196,c.y,{align:'right'}); c.y+=6; c.doc.setFont(undefined,'normal'); }
+
 function reportDaily(){
-  const d=document.getElementById('r_day').value; if(!d)return;
-  makePDF('Kunlik hisobot',prettyDate(d),collect(x=>x===d)).save('hisobot_kunlik_'+d+'.pdf');
-  toast('PDF yuklandi ✓');
+  const day=document.getElementById('r_day').value; if(!day)return;
+  const c=pdfCtx(newDoc()); pHeader(c,"Kunlik hisobot (batafsil)",prettyDate(day));
+  const inRows=ST.ledger.filter(e=>e.date===day&&e.dir==='in');
+  const outRows=ST.ledger.filter(e=>e.date===day&&e.dir==='out');
+  const dg=ST.debtGiven.filter(d=>d.date===day);
+  const dp=ST.debtPaid.filter(d=>d.date===day);
+  const usul=m=>m==='cash'?'Naqd':m==='card'?'Karta':m;
+  const joy=s=>s==='PC'?'PC':'Bar';
+
+  const colsIn=[{x:14,w:26},{x:44,w:16},{x:66,w:24},{x:96,w:60},{x:196,a:'r'}];
+  pSection(c,"Kirim — qo'shilgan pul");
+  pRow(c,colsIn,['Kim','Joy','Usul','Kategoriya','Summa'],true);
+  let tin=0; inRows.forEach(e=>{ tin+=e.amount; pRow(c,colsIn,[e.by,joy(e.safe),usul(e.method),e.reason||'Kirim',money(e.amount)]); });
+  if(!inRows.length) pRow(c,colsIn,['—','','','','0']);
+  pTotal(c,'Jami kirim',tin);
+
+  pSection(c,"Chiqim — olingan pul");
+  pRow(c,colsIn,['Kim','Joy','Usul','Sabab','Summa'],true);
+  let tout=0; outRows.forEach(e=>{ tout+=e.amount; pRow(c,colsIn,[e.by,joy(e.safe),usul(e.method),e.reason||'—',money(e.amount)]); });
+  if(!outRows.length) pRow(c,colsIn,['—','','','','0']);
+  pTotal(c,'Jami chiqim',tout);
+
+  const colsDG=[{x:14,w:40},{x:70,w:70},{x:196,a:'r'}];
+  pSection(c,"Qarz berilgan");
+  pRow(c,colsDG,['Kim (kassir)','Qarzdor','Summa'],true);
+  let tdg=0; dg.forEach(d=>{ tdg+=d.amount; pRow(c,colsDG,[d.by,d.name||"Noma'lum",money(d.amount)]); });
+  if(!dg.length) pRow(c,colsDG,['—','','0']);
+  pTotal(c,'Jami qarz berilgan',tdg);
+
+  const colsDP=[{x:14,w:34},{x:56,w:44},{x:106,w:24},{x:196,a:'r'}];
+  pSection(c,"Qarz to'langan");
+  pRow(c,colsDP,['Kim (kassir)','Qarzdor','Usul','Summa'],true);
+  let tdp=0; dp.forEach(d=>{ tdp+=d.amount; pRow(c,colsDP,[d.by,d.name||"Noma'lum",usul(d.method),money(d.amount)]); });
+  if(!dp.length) pRow(c,colsDP,['—','','','0']);
+  pTotal(c,"Jami qarz to'langan",tdp);
+
+  c.doc.save('hisobot_kunlik_'+day+'.pdf'); toast('PDF yuklandi ✓');
 }
+
 function reportMonthly(){
   const m=document.getElementById('r_month').value; if(!m)return;
-  const [y,mm]=m.split('-');
-  makePDF('Oylik hisobot',MONTHS_UZ[+mm-1]+' '+y,collect(x=>x.startsWith(m))).save('hisobot_oylik_'+m+'.pdf');
-  toast('PDF yuklandi ✓');
+  const [yy,mm]=m.split('-');
+  const c=pdfCtx(newDoc()); pHeader(c,"Oylik hisobot",MONTHS_UZ[+mm-1]+' '+yy);
+
+  // kunlik jamlar
+  const days={};
+  const D=k=>days[k]=days[k]||{cash:0,card:0,debt:0,out:0};
+  ST.ledger.forEach(e=>{ if(!e.date.startsWith(m))return; const d=D(e.date);
+    if(e.dir==='out') d.out+=e.amount; else if(e.method==='cash') d.cash+=e.amount; else d.card+=e.amount; });
+  ST.debtGiven.forEach(x=>{ if(x.date.startsWith(m)) D(x.date).debt+=x.amount; });
+  const dayKeys=Object.keys(days).sort();
+
+  const cols=[{x:14},{x:66,a:'r'},{x:100,a:'r'},{x:130,a:'r'},{x:162,a:'r'},{x:196,a:'r'}];
+  pSection(c,"Kunlar bo'yicha");
+  pRow(c,cols,['Kun','Naqd','Karta','Qarz','Chiqim','Sof'],true);
+  let sc=0,sk=0,sd=0,so=0;
+  dayKeys.forEach(k=>{ const d=days[k]; sc+=d.cash;sk+=d.card;sd+=d.debt;so+=d.out;
+    pRow(c,cols,[prettyDate(k),money(d.cash),money(d.card),money(d.debt),money(d.out),money(d.cash+d.card+d.debt-d.out)]); });
+  if(!dayKeys.length) pRow(c,cols,['—','0','0','0','0','0']);
+  pRow(c,cols,['JAMI',money(sc),money(sk),money(sd),money(so),money(sc+sk+sd-so)],true);
+
+  // kategoriya bo'yicha chiqim
+  const spend={};
+  ST.ledger.forEach(e=>{ if(e.date.startsWith(m)&&e.dir==='out'){ const k=e.reason||'Boshqa'; spend[k]=(spend[k]||0)+e.amount; } });
+  const colsC=[{x:14,w:120},{x:196,a:'r'}];
+  pSection(c,"Chiqim — kategoriyalar bo'yicha");
+  pRow(c,colsC,['Kategoriya','Summa'],true);
+  const sk2=Object.keys(spend).sort((a,b)=>spend[b]-spend[a]);
+  sk2.forEach(k=>pRow(c,colsC,[k,money(spend[k])]));
+  if(!sk2.length) pRow(c,colsC,['—','0']);
+
+  // kirim manbalari
+  const src={PC:0,'Bar sotuv':0,"Qarz to'lovi":0};
+  ST.ledger.forEach(e=>{ if(!e.date.startsWith(m)||e.dir!=='in')return;
+    if(e.reason==='Sotuv') src['Bar sotuv']+=e.amount; else if(e.reason==="Qarz to'lovi") src["Qarz to'lovi"]+=e.amount; else src.PC+=e.amount; });
+  let dgm=0; ST.debtGiven.forEach(x=>{ if(x.date.startsWith(m)) dgm+=x.amount; });
+  pSection(c,"Kirim manbalari");
+  pRow(c,colsC,['Manba','Summa'],true);
+  pRow(c,colsC,['PC (naqd/karta)',money(src.PC)]);
+  pRow(c,colsC,['Bar sotuv',money(src['Bar sotuv'])]);
+  pRow(c,colsC,["Qarz to'lovi",money(src["Qarz to'lovi"])]);
+  pRow(c,colsC,['Qarzga berilgan',money(dgm)]);
+
+  c.doc.save('hisobot_oylik_'+m+'.pdf'); toast('PDF yuklandi ✓');
+}
+
+function reportDebt(){
+  const c=pdfCtx(newDoc()); pHeader(c,"Qarz hisoboti",prettyDate(todayBiz()));
+  const people=perPersonDebt();
+  let tg=0,tp=0; people.forEach(p=>{ tg+=p.given; tp+=p.paid; });
+  pSection(c,"Umumiy");
+  pTotal(c,'Jami berilgan qarz',tg);
+  pTotal(c,"Jami to'langan",tp);
+  pTotal(c,'Qoldiq (bizga qarz)',tg-tp);
+
+  const active=people.filter(p=>p.remaining>0.5).sort((a,b)=>b.remaining-a.remaining);
+  pSection(c,"Shaxslar bo'yicha (qoldiq bor)");
+  const cols=[{x:14,w:34},{x:52,w:30},{x:110,w:36},{x:196,a:'r'}];
+  active.forEach(p=>{
+    pBreak(c,10); c.y+=1; c.doc.setFont(undefined,'bold').setFontSize(10);
+    c.doc.text(esc(p.name),14,c.y); c.doc.setTextColor(200,80,0);
+    c.doc.text('Qoldiq: '+money(p.remaining)+' '+CONFIG.CURRENCY,196,c.y,{align:'right'}); c.doc.setTextColor(0); c.y+=5;
+    pRow(c,cols,['Sana','Turi','Kassir','Summa'],true);
+    p.rows.forEach(r=>pRow(c,cols,[prettyDate(r.date), r.type==='in'?'Berildi':"To'landi"+(r.method?' ('+(r.method==='cash'?'naqd':'karta')+')':''), r.by||'—', (r.type==='in'?'+':'−')+money(r.amount)]));
+    c.y+=2;
+  });
+  if(!active.length) pRow(c,[{x:14}],['Faol qarzdor yo\'q']);
+  c.doc.save('hisobot_qarz_'+todayBiz()+'.pdf'); toast('PDF yuklandi ✓');
 }
 
 /* =====================================================================
-   KAMERA / SKANER
+   KAMERA / SKANER  (tovush + tebranish, aniq bir skan = bir dona)
    ===================================================================== */
-let __stream=null;
+let __stream=null, __AC=null;
+function beep(){ try{ __AC=__AC||new (window.AudioContext||window.webkitAudioContext)();
+  if(__AC.state==='suspended') __AC.resume();
+  const o=__AC.createOscillator(), g=__AC.createGain(); o.frequency.value=880; o.type='square';
+  o.connect(g); g.connect(__AC.destination);
+  const t=__AC.currentTime; g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.35,t+0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+0.13); o.start(t); o.stop(t+0.14);
+}catch(e){} }
+function feedback(){ beep(); try{ if(navigator.vibrate) navigator.vibrate(70); }catch(e){} }
+
 async function startCamera(host,onCode){
-  stopCamera();
-  if(!host) return;
+  stopCamera(); if(!host)return;
   if(!('BarcodeDetector' in window)){
     host.innerHTML=`<div class="cam-msg">Bu brauzer avtomatik skanerni qo'llamaydi.<br>
-      Nomidan qidiring yoki shtrix-kodni qo'lda kiriting.<br><small>(Android Chrome tavsiya etiladi)</small></div>`;
-    return;
-  }
+      Nomidan qidiring yoki shtrix-kodni qo'lda kiriting.<br><small>(Android Chrome tavsiya etiladi)</small></div>`; return; }
   try{
     __stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
     host.innerHTML=`<video autoplay playsinline muted></video><div class="cam-guide"></div>`;
     const v=host.querySelector('video'); v.srcObject=__stream; await v.play();
     const det=new BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf']});
-    let last=0,lastCode='';
+    let accepted=null, gap=0, lastAccept=0;
     const loop=async()=>{
       if(!__stream) return;
       try{
         const codes=await det.detect(v);
         if(codes.length){
           const val=codes[0].rawValue, now=Date.now();
-          if(val!==lastCode||now-last>1200){ lastCode=val; last=now; onCode(val); }
+          // yangi ko'rsatish: kod o'zgargan yoki kadrdan chiqib qaytgan bo'lsa VA kamida 400ms o'tgan bo'lsa
+          if(val!==accepted && now-lastAccept>400){
+            accepted=val; lastAccept=now; feedback(); onCode(val);
+          }
+          gap=0;
+        } else {
+          if(!gap) gap=Date.now();
+          if(Date.now()-gap>350) accepted=null;   // shtrix-kod kadrdan chiqdi -> keyingisiga tayyor
         }
       }catch(e){}
       requestAnimationFrame(loop);
     };
     loop();
-  }catch(e){
-    host.innerHTML=`<div class="cam-msg">Kameraga ruxsat berilmadi.<br>Nomidan qidiring yoki qo'lda kiriting.</div>`;
-  }
+  }catch(e){ host.innerHTML=`<div class="cam-msg">Kameraga ruxsat berilmadi.<br>Nomidan qidiring yoki qo'lda kiriting.</div>`; }
 }
 function stopCamera(){ if(__stream){ __stream.getTracks().forEach(t=>t.stop()); __stream=null; } }
 
@@ -1045,91 +951,62 @@ function openScanner(label,onCode,opts={}){
   document.body.appendChild(d.firstElementChild);
   window.__scCb=onCode;
   startCamera(document.getElementById('sc_host'),code=>{
-    const fb=document.getElementById('sc_feed'); if(fb)fb.textContent='✓ '+code;
-    onCode(code); if(!opts.keepOpen) closeScanner();
-  });
+    const fb=document.getElementById('sc_feed'); if(fb)fb.textContent='✓ '+code; onCode(code); if(!opts.keepOpen) closeScanner(); });
 }
-function scManual(){ const el=document.getElementById('sc_manual');
-  const v=el.value.trim(); if(v&&window.__scCb){ window.__scCb(v); el.value=''; } }
+function scManual(){ const el=document.getElementById('sc_manual'); const v=el.value.trim(); if(v&&window.__scCb){ feedback(); window.__scCb(v); el.value=''; } }
 function closeScanner(){ stopCamera(); const s=document.getElementById('scanScrim'); if(s)s.remove(); }
-function scanInto(id){ openScanner('Shtrix-kodni skaner qiling',code=>{
-  const el=document.getElementById(id); if(el){ el.value=code; regLookup(); } }); }
+function scanInto(id){ openScanner('Shtrix-kodni skaner qiling',code=>{ const el=document.getElementById(id); if(el){ el.value=code; regLookup(); } }); }
 
 /* =====================================================================
    UI yordamchi
    ===================================================================== */
-function sheet(inner){
-  closeSheet();
-  const d=document.createElement('div');
+function sheet(inner){ closeSheet(); const d=document.createElement('div');
   d.innerHTML=`<div class="scrim" id="scrim" onclick="if(event.target===this)closeSheet()">
     <div class="sheet"><div class="grab"></div>${inner}</div></div>`;
-  document.body.appendChild(d.firstElementChild);
-}
+  document.body.appendChild(d.firstElementChild); }
 function closeSheet(){ stopCamera(); const s=document.getElementById('scrim'); if(s)s.remove(); }
 let tT=null;
-function toast(m){
-  const o=document.getElementById('toast'); if(o)o.remove();
+function toast(m){ const o=document.getElementById('toast'); if(o)o.remove();
   const e=document.createElement('div'); e.id='toast'; e.className='toast'; e.textContent=m;
-  document.body.appendChild(e); clearTimeout(tT); tT=setTimeout(()=>e.remove(),1900);
-}
+  document.body.appendChild(e); clearTimeout(tT); tT=setTimeout(()=>e.remove(),1900); }
 function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function dl(b,n){ const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=n; a.click();
-  setTimeout(()=>URL.revokeObjectURL(u),1000); }
+function dl(b,n){ const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=n; a.click(); setTimeout(()=>URL.revokeObjectURL(u),1000); }
+
+/* ---------- ANDROID (PWA) ---------- */
+let INSTALL_EVT=null;
+const installed=()=>window.matchMedia('(display-mode: standalone)').matches||window.navigator.standalone===true;
+window.addEventListener('beforeinstallprompt',e=>{ e.preventDefault(); INSTALL_EVT=e; refreshInstallBtns(); });
+window.addEventListener('appinstalled',()=>{ INSTALL_EVT=null; refreshInstallBtns(); toast("Ilova o'rnatildi ✓"); });
+const ICON_DL=`<svg viewBox="0 0 24 24"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg>`;
+function installBtnHTML(){ if(installed()||!INSTALL_EVT) return '';
+  return `<button class="install" id="installbtn" onclick="doInstall()">${ICON_DL}
+    <span>Ilovani o'rnatish<small>Telefon ekraniga qo'shiladi — brauzersiz ochiladi</small></span></button>`; }
+function refreshInstallBtns(){ document.querySelectorAll('[data-install]').forEach(h=>h.innerHTML=installBtnHTML()); }
+async function doInstall(){ if(!INSTALL_EVT){ toast("Brauzer menyusidan \"Ekranga qo'shish\"ni tanlang"); return; }
+  INSTALL_EVT.prompt(); await INSTALL_EVT.userChoice; INSTALL_EVT=null; refreshInstallBtns(); }
+if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{})); }
 
 /* ---------- login ---------- */
 function renderLogin(){
-  app.innerHTML=`<div id="login">
-    <div class="brand">Kassa<span>.</span></div>
+  app.innerHTML=`<div id="login"><div class="brand">Kassa<span>.</span></div>
     <p class="sub">O'yin klubi — pul nazorati</p>
     <div class="field"><label>Login</label><input id="li_user" placeholder="admin" autocapitalize="off"/></div>
-    <div class="field"><label>Parol</label><input id="li_pass" type="password" placeholder="••••"
-      onkeydown="if(event.key==='Enter')doLogin()"/></div>
+    <div class="field"><label>Parol</label><input id="li_pass" type="password" placeholder="••••" onkeydown="if(event.key==='Enter')doLogin()"/></div>
     <div class="err" id="li_err"></div>
     <button class="btn block" onclick="doLogin()">Kirish</button>
     <div data-install>${installBtnHTML()}</div>
     <p class="money-note">Boshlang'ich: <b>admin</b> / <b>admin</b></p></div>`;
 }
-function doLogin(){
-  const u=document.getElementById('li_user').value.trim();
-  const p=document.getElementById('li_pass').value;
+function doLogin(){ const u=document.getElementById('li_user').value.trim(); const p=document.getElementById('li_pass').value;
   const f=ST.users.find(x=>x.username===u&&x.password===p);
   if(!f){ document.getElementById('li_err').textContent='Login yoki parol xato'; return; }
-  CURRENT=f; LS.set('kassa_session',u); TAB='PC'; render(); sync();
-}
+  CURRENT=f; LS.set('kassa_session',u); TAB='PC'; render(); sync(); }
 function logout(){ CURRENT=null; LS.set('kassa_session',''); render(); }
-
-/* =====================================================================
-   ANDROID ILOVASI (PWA) — o'rnatish va oflayn ishlash
-   ===================================================================== */
-let INSTALL_EVT=null;
-const installed=()=> window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
-window.addEventListener('beforeinstallprompt',e=>{ e.preventDefault(); INSTALL_EVT=e; refreshInstallBtns(); });
-window.addEventListener('appinstalled',()=>{ INSTALL_EVT=null; refreshInstallBtns(); toast("Ilova o'rnatildi ✓"); });
-
-const ICON_DL=`<svg viewBox="0 0 24 24"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg>`;
-function installBtnHTML(){
-  if(installed() || !INSTALL_EVT) return '';
-  return `<button class="install" id="installbtn" onclick="doInstall()">${ICON_DL}
-    <span>Ilovani o'rnatish<small>Telefon ekraniga qo'shiladi — brauzersiz ochiladi</small></span></button>`;
-}
-function refreshInstallBtns(){
-  const holders=document.querySelectorAll('[data-install]');
-  holders.forEach(h=>{ h.innerHTML=installBtnHTML(); });
-}
-async function doInstall(){
-  if(!INSTALL_EVT){ toast("Brauzer menyusidan \"Ekranga qo'shish\"ni tanlang"); return; }
-  INSTALL_EVT.prompt();
-  await INSTALL_EVT.userChoice;
-  INSTALL_EVT=null; refreshInstallBtns();
-}
-if('serviceWorker' in navigator){
-  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
-}
 
 /* ---------- ishga tushirish ---------- */
 async function boot(){
-  const t=new URLSearchParams(location.search).get('tab');   // ekran yorliqlari (shortcuts)
-  if(['PC','BAR','DEBT','SET'].includes(t)) TAB=t;
+  const t=new URLSearchParams(location.search).get('tab');
+  if(['PC','BAR','SET'].includes(t)) TAB=t;
   rebuild(); restoreSession(); render();
   if(online()){ await sync(); rebuild(); restoreSession(); render(); }
 }
