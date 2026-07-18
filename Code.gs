@@ -19,7 +19,7 @@ const PAY_COLS = 8;
 const TABS = {
   SALES:    ['Vaqt','Sana','Kassir','Mahsulot','Shtrix-kod','Soni','Narx','Summa','Tolov'],
   MONEY:    ['Vaqt','Sana','Kassir','Joy','Yonalish','Tolov','Summa','Kategoriya'],
-  DEBT:     ['Vaqt','Sana','Kassir','Qarzdor','Turi','Tolov','Summa'],
+  DEBT:     ['Vaqt','Sana','Kassir','Qarzdor','Turi','Tolov','Summa','Joy'],
   STOCK:    ['Vaqt','Sana','Kassir','Amal','Mahsulot','Shtrix-kod','Ozgarish'],
   PRODUCTS: ['Shtrix-kod','Mahsulot','Narx'],
   USERS:    ['Login','Rol']
@@ -100,6 +100,9 @@ function fanout_(ops){
   const userDeletes = [];
   const M = m => m==='cash' ? 'Naqd' : m==='card' ? 'Karta' : m==='debt' ? 'Qarz' : m;
 
+  // qarz manbasi: eski oplarda safe yo'q — PC hisoblanadi
+  const SAFE = s => s==='BAR' ? 'BAR' : 'PC';
+
   ops.forEach(op => {
     const p = op.p || {}, ts = new Date(op.ts), date = p.date || '', user = op.user || '';
     switch(op.type){
@@ -108,13 +111,15 @@ function fanout_(ops){
           buckets.SALES.push([ts,date,user,it.name,it.barcode,it.qty,it.price,it.qty*it.price,M(p.method)]);
           buckets.STOCK.push([ts,date,user,'Sotildi',it.name,it.barcode,-it.qty]);
         });
+        // qarzga sotuv: pul kirmaydi, qarz BAR manbasi bilan yoziladi
+        if (p.method==='debt') buckets.DEBT.push([ts,date,user,p.name||"Noma'lum",'Berildi','',p.total,'BAR']);
         break;
       case 'money':
-        if (p.method==='debt') buckets.DEBT.push([ts,date,user,p.name||"Noma'lum",'Berildi','',p.amount]);
+        if (p.method==='debt') buckets.DEBT.push([ts,date,user,p.name||"Noma'lum",'Berildi','',p.amount,SAFE(p.safe)]);
         else buckets.MONEY.push([ts,date,user,p.safe,(p.dir==='in'?'Kirim':'Chiqim'),M(p.method),p.amount,p.reason||'']);
         break;
       case 'debt_pay':
-        buckets.DEBT.push([ts,date,user,p.name||"Noma'lum","To'landi",M(p.method),p.amount]);
+        buckets.DEBT.push([ts,date,user,p.name||"Noma'lum","To'landi",M(p.method),p.amount,SAFE(p.safe)]);
         break;
       case 'stock_in':
         buckets.STOCK.push([ts,date,user,'Kirim',(prod[p.barcode]||{}).name||'',p.barcode,p.qty]);
@@ -151,6 +156,9 @@ function tab_(name){
     s = ss.insertSheet(name);
     s.getRange(1,1,1,TABS[name].length).setValues([TABS[name]]).setFontWeight('bold');
     s.setFrozenRows(1);
+  } else if (s.getLastColumn() < TABS[name].length){
+    // yangi ustun qo'shilgan (masalan DEBT -> 'Joy') — sarlavhani to'ldiramiz
+    s.getRange(1,1,1,TABS[name].length).setValues([TABS[name]]).setFontWeight('bold');
   }
   return s;
 }

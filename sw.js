@@ -3,7 +3,7 @@
    Ma'lumot (operatsiyalar) baribar qurilmada saqlanadi va aloqa
    tiklanganda Google Sheets'ga yuboriladi. */
 
-const VERSION = 'kassa-v2';
+const VERSION = 'kassa-v3';
 const SHELL = [
   './',
   './index.html',

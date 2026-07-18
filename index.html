@@ -207,6 +207,22 @@
     font-weight:800;border-radius:14px;padding:15px;min-height:var(--tap);margin-top:12px}
   .paydebt-btn svg{width:22px;height:22px;stroke:#04231a;stroke-width:2.3;fill:none}
   .method3 .opt.on.debt{border-color:var(--warn);color:var(--warn);background:#332707}
+  .seg .opt.on.safepc{border-color:var(--accent);color:var(--accent);background:rgba(124,92,255,.12)}
+  .seg .opt.on.safebar{border-color:var(--warn);color:var(--warn);background:#332707}
+
+  /* Hisobot (pivot) */
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px}
+  .chip{padding:9px 14px;border-radius:20px;background:var(--surface2);border:1px solid var(--line);
+    color:var(--muted);font-weight:700;font-size:13px;min-height:40px}
+  .chip.on{border-color:var(--accent);color:var(--accent);background:rgba(124,92,255,.12)}
+  .ptwrap{overflow-x:auto}
+  .ptable{width:100%;border-collapse:collapse;font-size:13px}
+  .ptable th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700}
+  .ptable th,.ptable td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+  .ptable th:first-child,.ptable td:first-child{text-align:left}
+  .ptable tbody tr:last-child td{border-bottom:1px solid var(--line)}
+  .ptable tfoot td{border-bottom:none;font-weight:800;padding-top:12px}
+  .ptable .dim{color:var(--faint)}
 </style>
 </head>
 <body>
@@ -214,9 +230,10 @@
 
 <script>
 /* =====================================================================
-   KASSA — o'yin klubi (v2)
-   Menyular: PC, Bar (foydalanuvchi) + Sozlamalar (admin).
-   Qarz — PC'da to'lov usuli (Naqd/Karta/Qarz). Bar faqat Naqd/Karta.
+   KASSA — o'yin klubi (v3)
+   Menyular: PC, Bar (foydalanuvchi) + Hisobot, Sozlamalar (admin).
+   Qarz — PC va Bar'da to'lov usuli (Naqd/Karta/Qarz). Qarz manbasi (safe)
+   bilan yoziladi: to'lov o'sha kassaga qaytadi. Eski oplar (safe'siz) PC.
    Amallar umumiy jurnalga qo'shiladi (ko'p qurilma xavfsiz).
    ===================================================================== */
 
@@ -224,7 +241,7 @@ const CONFIG = {
   BUSINESS_DAY_CUTOFF_HOUR: 6,
   LOW_STOCK: 3,
   CURRENCY: "so'm",
-  SHEETS_API_URL: 'https://script.google.com/macros/s/AKfycbynsfp-NglIj3ewRQQMbZdas1unXvRqn_IgbTJMKYGCVVvN1rLjSCcRhFHJnVhaUg2_CQ/exec',
+  SHEETS_API_URL: 'https://script.google.com/macros/s/AKfycby0ge040WinDGxAi50VXWWAkK0AJgOgaJPPfftue9zkIAsWDCwlS0U4AFL2vZPSRKaaeQ/exec',
   POLL_MS: 4000
 };
 const online = ()=> !!CONFIG.SHEETS_API_URL;
@@ -260,23 +277,26 @@ function rebuild(){
       case 'reason_add': if(!st.reasons.includes(p.reason)) st.reasons.push(p.reason); break;
 
       case 'money':          // {safe,method('cash'|'card'|'debt'),dir,amount,date,reason,name}
-        if(p.method==='debt') st.debtGiven.push({name:p.name||'',amount:p.amount,date:p.date,by,ts});
+        // eski oplarda qarz manbasi yo'q — ular PC hisoblanadi
+        if(p.method==='debt') st.debtGiven.push({name:p.name||'',amount:p.amount,date:p.date,safe:p.safe==='BAR'?'BAR':'PC',by,ts});
         else st.ledger.push({safe:p.safe,method:p.method,dir:p.dir,amount:p.amount,date:p.date,reason:p.reason||'',by,ts});
         break;
-      case 'debt_pay':       // {name,amount,method,date}
-        st.debtPaid.push({name:p.name||'',amount:p.amount,method:p.method,date:p.date,by,ts});
-        st.ledger.push({safe:'PC',method:p.method,dir:'in',amount:p.amount,date:p.date,reason:"Qarz to'lovi",by,ts});
-        break;
+      case 'debt_pay':{      // {name,amount,method,date,safe?} — safe yo'q bo'lsa PC
+        const dsafe=p.safe==='BAR'?'BAR':'PC';
+        st.debtPaid.push({name:p.name||'',amount:p.amount,method:p.method,date:p.date,safe:dsafe,by,ts});
+        st.ledger.push({safe:dsafe,method:p.method,dir:'in',amount:p.amount,date:p.date,reason:"Qarz to'lovi",by,ts});
+        break; }
 
       case 'prod_new': if(!P(p.barcode)) st.products.push({barcode:p.barcode,name:p.name,photo:p.photo||'',price:p.price||0,qty:0}); break;
       case 'stock_in':{ const x=P(p.barcode); if(x)x.qty+=p.qty; break; }
       case 'price':{ const x=P(p.barcode); if(x)x.price=p.price; break; }
       case 'stock_set': (p.counts||[]).forEach(c=>{ const x=P(c.barcode); if(x)x.qty=c.qty; }); break;
 
-      case 'sale':
+      case 'sale':           // {date,method('cash'|'card'|'debt'),total,items,name?}
         st.sales.push({date:p.date,method:p.method,total:p.total,items:p.items||[],by,ts});
         (p.items||[]).forEach(it=>{ const x=P(it.barcode); if(x)x.qty-=it.qty; });
-        st.ledger.push({safe:'BAR',method:p.method,dir:'in',amount:p.total,date:p.date,reason:'Sotuv',by,ts});
+        if(p.method==='debt') st.debtGiven.push({name:p.name||'',amount:p.total,date:p.date,safe:'BAR',by,ts});
+        else st.ledger.push({safe:'BAR',method:p.method,dir:'in',amount:p.total,date:p.date,reason:'Sotuv',by,ts});
         break;
     }
   }
@@ -322,16 +342,22 @@ const MONTHS_UZ=["Yanvar","Fevral","Mart","Aprel","May","Iyun","Iyul","Avgust","
 
 function balance(safe,method){ let s=0;
   ST.ledger.forEach(e=>{ if(e.safe===safe&&e.method===method) s+=(e.dir==='in'?e.amount:-e.amount); }); return s; }
-function debtOutstanding(){ let g=0,p=0;
-  ST.debtGiven.forEach(d=>g+=d.amount); ST.debtPaid.forEach(d=>p+=d.amount); return g-p; }
+function debtOutstanding(safe){ let g=0,p=0;
+  ST.debtGiven.forEach(d=>{ if(!safe||d.safe===safe) g+=d.amount; });
+  ST.debtPaid.forEach(d=>{ if(!safe||d.safe===safe) p+=d.amount; }); return g-p; }
 function perPersonDebt(){
   const m={};
   const key=n=>n&&n.trim()?n.trim():"Noma'lum";
-  ST.debtGiven.forEach(d=>{ const k=key(d.name); (m[k]=m[k]||{name:k,given:0,paid:0,rows:[]});
-    m[k].given+=d.amount; m[k].rows.push({date:d.date,type:'in',amount:d.amount,by:d.by}); });
-  ST.debtPaid.forEach(d=>{ const k=key(d.name); (m[k]=m[k]||{name:k,given:0,paid:0,rows:[]});
-    m[k].paid+=d.amount; m[k].rows.push({date:d.date,type:'out',amount:d.amount,by:d.by,method:d.method}); });
-  return Object.values(m).map(x=>{ x.remaining=x.given-x.paid; x.rows.sort((a,b)=>a.date<b.date?-1:1); return x; });
+  const mk=k=>m[k]=m[k]||{name:k,given:0,paid:0,givenPC:0,givenBAR:0,paidPC:0,paidBAR:0,rows:[]};
+  ST.debtGiven.forEach(d=>{ const x=mk(key(d.name));
+    x.given+=d.amount; if(d.safe==='BAR')x.givenBAR+=d.amount; else x.givenPC+=d.amount;
+    x.rows.push({date:d.date,type:'in',amount:d.amount,by:d.by,safe:d.safe}); });
+  ST.debtPaid.forEach(d=>{ const x=mk(key(d.name));
+    x.paid+=d.amount; if(d.safe==='BAR')x.paidBAR+=d.amount; else x.paidPC+=d.amount;
+    x.rows.push({date:d.date,type:'out',amount:d.amount,by:d.by,method:d.method,safe:d.safe}); });
+  return Object.values(m).map(x=>{ x.remaining=x.given-x.paid;
+    x.remainingPC=x.givenPC-x.paidPC; x.remainingBAR=x.givenBAR-x.paidBAR;
+    x.rows.sort((a,b)=>a.date<b.date?-1:1); return x; });
 }
 function debtorsWithBalance(){ return perPersonDebt().filter(x=>x.remaining>0.5).sort((a,b)=>b.remaining-a.remaining); }
 
@@ -370,7 +396,7 @@ let TAB='PC', PICK={add:'cash',sell:'cash',pay:'cash'};
 
 function render(){
   if(!CURRENT){ renderLogin(); return; }
-  if(TAB==='SET'&&!isAdmin()) TAB='PC';
+  if((TAB==='SET'||TAB==='REP')&&!isAdmin()) TAB='PC';
   app.innerHTML=headerHTML()+`<main>${tabHTML()}</main>`+navHTML();
   PICK.add='cash';
 }
@@ -382,7 +408,7 @@ function syncBadgeHTML(){
 }
 function updateSyncBadge(){ const el=document.getElementById('syncbox'); if(el)el.innerHTML=syncBadgeHTML(); }
 function headerHTML(){
-  const t={PC:'PC — Kassa',BAR:'Bar',SET:'Sozlamalar'};
+  const t={PC:'PC — Kassa',BAR:'Bar',REP:'Hisobot',SET:'Sozlamalar'};
   return `<header><div><div class="htitle-wrap"><img class="hlogo" src="logo.png" alt=""/><div class="htitle">${t[TAB]}</div></div>
       <div id="syncbox" style="margin-top:6px">${syncBadgeHTML()}</div></div>
     <div style="display:flex;align-items:center;gap:10px">
@@ -391,14 +417,14 @@ function headerHTML(){
 }
 function navHTML(){
   const it=(id,ic,l)=>`<button class="${TAB===id?'on':''}" onclick="go('${id}')">${ic}<span>${l}</span></button>`;
-  return `<nav>${it('PC',I.pc,'PC')}${it('BAR',I.bar,'Bar')}${isAdmin()?it('SET',I.gear,'Sozlamalar'):''}</nav>`;
+  return `<nav>${it('PC',I.pc,'PC')}${it('BAR',I.bar,'Bar')}${isAdmin()?it('REP',I.report,'Hisobot')+it('SET',I.gear,'Sozlamalar'):''}</nav>`;
 }
 function go(t){ TAB=t; render(); }
-function tabHTML(){ if(TAB==='PC')return pcTab(); if(TAB==='BAR')return barTab(); return setTab(); }
+function tabHTML(){ if(TAB==='PC')return pcTab(); if(TAB==='BAR')return barTab(); if(TAB==='REP')return repTab(); return setTab(); }
 
 /* ---------- PC ---------- */
 function pcTab(){
-  const c=balance('PC','cash'), k=balance('PC','card'), d=debtOutstanding(), t=c+k+d;
+  const c=balance('PC','cash'), k=balance('PC','card'), d=debtOutstanding('PC'), t=c+k+d;
   const box=(cls,dot,lbl,val,tap)=>`<button class="bal ${cls}" ${tap?`onclick="${tap}"`:'disabled style="opacity:1"'}>
       ${tap?'<span class="tap">›</span>':''}
       <span class="lbl"><span class="dot"></span>${lbl}</span>
@@ -415,7 +441,7 @@ function pcTab(){
 
 /* ---------- Bar ---------- */
 function barTab(){
-  const c=balance('BAR','cash'), k=balance('BAR','card'), t=c+k;
+  const c=balance('BAR','cash'), k=balance('BAR','card'), d=debtOutstanding('BAR'), t=c+k+d;
   const rows=ST.products.length?ST.products.map(p=>`<div class="lrow">
       <div class="thumb">${p.photo?`<img src="${p.photo}" style="width:100%;height:100%;object-fit:cover"/>`:'rasm'}</div>
       <div class="meta"><div class="nm">${esc(p.name)}</div>
@@ -429,14 +455,18 @@ function barTab(){
       <button class="bal card" onclick="openWithdraw('BAR','card')"><span class="tap">›</span>
         <span class="lbl"><span class="dot"></span>Karta</span>
         <span class="amt num">${money(k)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
-      <button class="bal total span2" disabled style="opacity:1">
+      <button class="bal debt" onclick="openDebtList()"><span class="tap">›</span>
+        <span class="lbl"><span class="dot"></span>Qarz</span>
+        <span class="amt num">${money(d)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
+      <button class="bal total" disabled style="opacity:1">
         <span class="lbl"><span class="dot"></span>Jami</span>
         <span class="amt num">${money(t)}</span><span class="cur">${CONFIG.CURRENCY}</span></button>
     </div>
     <button class="scan-tile" onclick="openSell()">
       <div class="ic">${I.scan}</div>
       <div><b>Sotish — skaner</b><span>Skaner qiling yoki mahsulot nomini yozing</span></div></button>
-    ${addPanelHTML('BAR',false)}
+    ${addPanelHTML('BAR',true)}
+    <button class="paydebt-btn" onclick="openPayback()">${I.money} Qarzni to'lash</button>
     <div class="plus-row" style="margin-top:20px"><div class="section-label" style="margin:0">Ombor</div>
       ${isAdmin()?`<button class="plus-btn" onclick="openRegister()">${I.plus} Mahsulot</button>`:''}</div>
     <div class="list">${rows}</div>`;
@@ -451,8 +481,8 @@ function addPanelHTML(safe,withDebt){
       <button class="opt cash on" id="add_cash" onclick="pickMethod('add','cash')">${I.cash}<span>NAQD</span></button>
       <button class="opt card" id="add_card" onclick="pickMethod('add','card')">${I.card}<span>KARTA</span></button>
       ${debtOpt}</div>
-    <div id="add_namewrap" class="field hidden" style="margin-top:12px"><label>Qarzdor ismi (ixtiyoriy — keyin ham qo'shsa bo'ladi)</label>
-      <input class="inp" id="add_name" list="add_names" placeholder="Ism (bo'sh qoldirsa ham bo'ladi)"/>
+    <div id="add_namewrap" class="field hidden" style="margin-top:12px"><label>Qarzdor ismi (majburiy)</label>
+      <input class="inp" id="add_name" list="add_names" placeholder="Ism"/>
       <datalist id="add_names">${[...new Set(ST.debtGiven.map(d=>d.name).filter(Boolean))].map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
     <div class="row mt"><label class="datepick">${I.cal}<input type="date" id="add_date" value="${todayBiz()}"/></label></div>
     <button class="btn block" style="margin-top:12px" onclick="doAdd('${safe}')">Saqlash</button></div>`;
@@ -461,6 +491,7 @@ function pickMethod(g,m){
   PICK[g]=m;
   ['cash','card','debt'].forEach(x=>{ const el=document.getElementById(g+'_'+x); if(el) el.classList.toggle('on',m===x); });
   if(g==='add'){ const nw=document.getElementById('add_namewrap'); if(nw) nw.classList.toggle('hidden',m!=='debt'); }
+  if(g==='sell'){ const nw=document.getElementById('sell_namewrap'); if(nw) nw.classList.toggle('hidden',m!=='debt'); }
 }
 function fmtInput(el){ const r=el.value.replace(/\D/g,''); el.value=r?money(parseInt(r,10)):''; }
 function readAmt(el){ return parseInt((el.value||'').replace(/\D/g,''),10)||0; }
@@ -470,7 +501,8 @@ function doAdd(safe){
   if(amt<=0){ toast('Summani kiriting'); return; }
   if(PICK.add==='debt'){
     const name=(document.getElementById('add_name')||{}).value?.trim()||'';
-    pushOp('money',{safe:'PC',method:'debt',dir:'in',amount:amt,date,name});
+    if(!name){ toast('Qarzdor ismini kiriting'); return; }
+    pushOp('money',{safe,method:'debt',dir:'in',amount:amt,date,name});
     toast('Qarz yozildi ✓');
   } else {
     pushOp('money',{safe,method:PICK.add,dir:'in',amount:amt,date});
@@ -508,9 +540,11 @@ function doWithdraw(safe,method){
 function openDebtList(){
   const l=debtorsWithBalance();
   sheet(`<h2>Qarzdorlar</h2>
-    <p class="desc">Jami qarz: <b class="num" style="color:var(--warn)">${money(debtOutstanding())} ${CONFIG.CURRENCY}</b></p>
+    <p class="desc">PC: <b class="num" style="color:var(--warn)">${money(debtOutstanding('PC'))}</b> ·
+      Bar: <b class="num" style="color:var(--warn)">${money(debtOutstanding('BAR'))}</b> ·
+      Jami: <b class="num" style="color:var(--warn)">${money(debtOutstanding())} ${CONFIG.CURRENCY}</b></p>
     <div class="list">${l.length?l.map(d=>`<div class="lrow"><div class="meta"><div class="nm">${esc(d.name)}</div>
-      <div class="sub num">berilgan ${money(d.given)} · to'langan ${money(d.paid)}</div></div>
+      <div class="sub num">PC ${money(d.remainingPC)} · Bar ${money(d.remainingBAR)}</div></div>
       <div class="qty num" style="color:var(--warn)">${money(d.remaining)}</div></div>`).join('')
       :`<div class="empty">Faol qarzdor yo'q</div>`}</div>
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Yopish</button>
@@ -519,12 +553,15 @@ function openDebtList(){
 
 /* ---------- qarzni to'lash ---------- */
 function openPayback(){
-  const l=debtorsWithBalance(); PICK.pay='cash';
+  const l=debtorsWithBalance(); PICK.pay='cash'; PICK.paysafe=(TAB==='BAR'?'BAR':'PC');
   sheet(`<h2>Qarzni to'lash</h2>
     <div class="field"><label>Qarzdor</label>
       <input class="inp" id="pb_name" list="pb_names" placeholder="Ism tanlang yoki yozing" oninput="pbHint()"/>
       <datalist id="pb_names">${l.map(d=>`<option value="${esc(d.name)}">${money(d.remaining)}</option>`).join('')}</datalist>
       <div class="money-note" id="pb_hint"></div></div>
+    <div class="field"><label>Qaysi kassaga (qarz manbasi)</label>
+      <div class="seg"><button class="opt safepc ${PICK.paysafe==='PC'?'on':''}" id="paysafe_PC" onclick="pickPaySafe('PC')">${I.pc}<span>PC</span></button>
+        <button class="opt safebar ${PICK.paysafe==='BAR'?'on':''}" id="paysafe_BAR" onclick="pickPaySafe('BAR')">${I.bar}<span>BAR</span></button></div></div>
     <div class="field"><label>Summa</label>
       <input class="bigamt num" id="pb_amt" inputmode="numeric" placeholder="0" oninput="fmtInput(this)"/></div>
     <div class="seg"><button class="opt cash on" id="pay_cash" onclick="pickMethod('pay','cash')">${I.cash}<span>NAQD</span></button>
@@ -533,10 +570,17 @@ function openPayback(){
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Bekor</button>
       <button class="btn" onclick="doPayback()">Tasdiqlash</button></div>`);
 }
+function pickPaySafe(s){ PICK.paysafe=s;
+  ['PC','BAR'].forEach(x=>{ const el=document.getElementById('paysafe_'+x); if(el)el.classList.toggle('on',s===x); }); }
 function pbHint(){
   const n=document.getElementById('pb_name').value.trim();
   const d=perPersonDebt().find(x=>x.name.toLowerCase()===n.toLowerCase());
-  document.getElementById('pb_hint').textContent=d?('Qoldiq: '+money(d.remaining)+' '+CONFIG.CURRENCY):'';
+  if(d){ // faqat bitta kassadan qarzi bo'lsa — o'sha kassani avtomatik tanlaymiz
+    if(d.remainingPC>0.5&&d.remainingBAR<=0.5) pickPaySafe('PC');
+    else if(d.remainingBAR>0.5&&d.remainingPC<=0.5) pickPaySafe('BAR');
+  }
+  document.getElementById('pb_hint').textContent=
+    d?('Qoldiq: PC '+money(d.remainingPC)+' · Bar '+money(d.remainingBAR)+' '+CONFIG.CURRENCY):'';
 }
 function doPayback(){
   const name=document.getElementById('pb_name').value.trim();
@@ -544,7 +588,8 @@ function doPayback(){
   if(!name){ toast('Qarzdorni tanlang'); return; }
   if(amt<=0){ toast('Summani kiriting'); return; }
   const date=document.getElementById('pb_date').value||todayBiz();
-  closeSheet(); pushOp('debt_pay',{name,amount:amt,method:PICK.pay,date}); toast("To'landi ✓ "+money(amt));
+  closeSheet(); pushOp('debt_pay',{name,amount:amt,method:PICK.pay,date,safe:PICK.paysafe});
+  toast("To'landi ✓ "+money(amt)+(PICK.paysafe==='BAR'?' (Bar)':' (PC)'));
 }
 
 /* ---------- mahsulot qo'shish ---------- */
@@ -617,9 +662,13 @@ function openSell(){
       <input class="inp" id="sell_search" placeholder="Mahsulot nomi..." oninput="sellSearch(this.value)" autocomplete="off"/>
       <button class="icon-btn" onclick="startCamera(document.getElementById('sell_cam'),sellHit)">${I.scan}</button></div>
     <div id="sell_sugg"></div><div class="list" id="sell_cart"></div>
-    <div class="seg" style="margin-top:14px">
+    <div class="seg method3" style="margin-top:14px">
       <button class="opt cash on" id="sell_cash" onclick="pickMethod('sell','cash')">${I.cash}<span>NAQD</span></button>
-      <button class="opt card" id="sell_card" onclick="pickMethod('sell','card')">${I.card}<span>KARTA</span></button></div>
+      <button class="opt card" id="sell_card" onclick="pickMethod('sell','card')">${I.card}<span>KARTA</span></button>
+      <button class="opt debt" id="sell_debt" onclick="pickMethod('sell','debt')">${I.debt}<span>QARZ</span></button></div>
+    <div id="sell_namewrap" class="field hidden" style="margin-top:12px"><label>Qarzdor ismi (majburiy)</label>
+      <input class="inp" id="sell_name" list="sell_names" placeholder="Ism"/>
+      <datalist id="sell_names">${[...new Set(ST.debtGiven.map(d=>d.name).filter(Boolean))].map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
     <div class="row mt"><label class="datepick">${I.cal}<input type="date" id="sell_date" value="${todayBiz()}"/></label></div>
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Bekor</button>
       <button class="btn" onclick="doSell()">Tasdiqlash</button></div>`);
@@ -651,10 +700,17 @@ function renderCart(){ const el=document.getElementById('sell_cart'); if(!el)ret
 function doSell(){ if(!CART.length){ toast("Mahsulot qo'shing"); return; }
   for(const c of CART){ const p=ST.products.find(x=>x.barcode===c.barcode);
     if(!p||p.qty<c.qty){ toast('Omborda yetarli emas: '+c.name); return; } }
+  let name='';
+  if(PICK.sell==='debt'){
+    name=(document.getElementById('sell_name')||{}).value?.trim()||'';
+    if(!name){ toast('Qarzdor ismini kiriting'); return; }
+  }
   const date=document.getElementById('sell_date').value||todayBiz();
   let total=0; CART.forEach(c=>total+=c.qty*c.price);
-  closeSheet(); pushOp('sale',{date,method:PICK.sell,total,items:CART.map(c=>({...c}))});
-  toast('Sotildi ✓ '+money(total)+' '+CONFIG.CURRENCY); }
+  const p={date,method:PICK.sell,total,items:CART.map(c=>({...c}))};
+  if(PICK.sell==='debt') p.name=name;
+  closeSheet(); pushOp('sale',p);
+  toast(PICK.sell==='debt'?'Qarzga yozildi ✓ '+money(total):'Sotildi ✓ '+money(total)+' '+CONFIG.CURRENCY); }
 
 /* =====================================================================
    SOZLAMALAR
@@ -667,8 +723,6 @@ function setTab(){
       <div class="mt"><b>Narxlar</b><span>Mahsulot narxlari</span></div><div class="chev">${I.chev}</div></button>
     <button onclick="openStock()"><div class="mi">${I.stock}</div>
       <div class="mt"><b>Inventarizatsiya</b><span>Ombor sanog'i · kamomad</span></div><div class="chev">${I.chev}</div></button>
-    <button onclick="openReports()"><div class="mi">${I.report}</div>
-      <div class="mt"><b>Hisobotlar</b><span>Kunlik · oylik · qarz (PDF)</span></div><div class="chev">${I.chev}</div></button>
   </div>
   <div data-install>${installBtnHTML()}</div>
   <div class="banner">Biznes-kun: har kuni ${String(CONFIG.BUSINESS_DAY_CUTOFF_HOUR).padStart(2,'0')}:00 gacha — oldingi kun hisoblanadi.<br>
@@ -752,6 +806,52 @@ function stockApply(){ const counts=(window.__counted||[]).map(c=>({barcode:c.ba
   if(!counts.length){ closeSheet(); return; } closeSheet(); pushOp('stock_set',{counts}); toast('Ombor yangilandi ✓'); }
 
 /* =====================================================================
+   HISOBOT (ekran jadvali, faqat admin)
+   ===================================================================== */
+let REP_SEL=new Set();   // bo'sh to'plam = "Hammasi"
+function repUsers(){
+  const s=new Set(ST.users.map(u=>u.username));
+  ST.ledger.forEach(e=>{ if(e.by&&e.by!=='-') s.add(e.by); });   // o'chirilgan kassirlar ham chiqsin
+  return [...s];
+}
+function repToggle(u){
+  if(u==='ALL') REP_SEL.clear();
+  else if(REP_SEL.has(u)) REP_SEL.delete(u); else REP_SEL.add(u);
+  render();
+}
+function repTab(){
+  const users=repUsers();
+  const sel=REP_SEL.size?REP_SEL:null;
+  const days=[]; const [y,m,d]=todayBiz().split('-').map(Number);
+  for(let i=0;i<7;i++){ const dt=new Date(y,m-1,d-i); const p=n=>String(n).padStart(2,'0');
+    days.push(dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())); }
+  const inflow=(date,safe)=>{ let s=0;
+    ST.ledger.forEach(e=>{ if(e.dir==='in'&&e.date===date&&e.safe===safe&&(!sel||sel.has(e.by))) s+=e.amount; });
+    return s; };
+  let tpc=0,tbar=0;
+  const rows=days.map(dt=>{ const a=inflow(dt,'PC'), b=inflow(dt,'BAR'); tpc+=a; tbar+=b;
+    return `<tr><td>${prettyDate(dt)}</td><td class="num${a?'':' dim'}">${money(a)}</td>
+      <td class="num${b?'':' dim'}">${money(b)}</td><td class="num"><b>${money(a+b)}</b></td></tr>`; }).join('');
+  const chips=[`<button class="chip ${sel?'':'on'}" onclick="repToggle('ALL')">Hammasi</button>`]
+    .concat(users.map(u=>`<button class="chip ${sel&&sel.has(u)?'on':''}" onclick="repToggle('${esc(u)}')">${esc(u)}</button>`)).join('');
+  return `<div class="section-label">Kassirlar</div>
+    <div class="chips">${chips}</div>
+    <div class="panel"><h3>Oxirgi 7 kun — tushum (${CONFIG.CURRENCY})</h3>
+      <div class="ptwrap"><table class="ptable">
+        <thead><tr><th>Sana</th><th>PC</th><th>Bar</th><th>Jami</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td>Jami</td><td class="num">${money(tpc)}</td><td class="num">${money(tbar)}</td>
+          <td class="num">${money(tpc+tbar)}</td></tr></tfoot>
+      </table></div>
+      <div class="money-note">Tushum = kassaga kirgan pul: kirim, bar sotuvi va qarz to'lovlari.
+        Qarzga berilgan summa kirmaydi, chiqim ayirilmaydi.</div></div>
+    <div class="menu" style="margin-top:16px">
+      <button onclick="openReports()"><div class="mi">${I.report}</div>
+        <div class="mt"><b>PDF hisobotlar</b><span>Kunlik · oylik · qarz</span></div><div class="chev">${I.chev}</div></button>
+    </div>`;
+}
+
+/* =====================================================================
    HISOBOTLAR (PDF)
    ===================================================================== */
 function openReports(){
@@ -767,26 +867,33 @@ function openReports(){
     <div class="actions"><button class="btn ghost" onclick="closeSheet()">Yopish</button></div>`);
 }
 /* --- PDF yordamchilari --- */
-function newDoc(){ const {jsPDF}=window.jspdf; return new jsPDF({unit:'mm',format:'a4'}); }
+function newDoc(){
+  if(!window.jspdf||!window.jspdf.jsPDF){ toast('PDF kutubxonasi yuklanmadi — sahifani yangilang'); return null; }
+  const {jsPDF}=window.jspdf; return new jsPDF({unit:'mm',format:'a4'});
+}
+/* Standart PDF shrift (WinAnsi) — o'zbekcha tutuq belgilarini ' ga, matematik
+   minusni - ga keltiramiz, aks holda ʻ/ʼ/− kabi belgilar PDFda buzilib chiqadi */
+function pdfSafe(s){ return String(s??'').replace(/[ʻʼ‘’`´]/g,"'").replace(/−/g,'-'); }
 function pdfCtx(doc){ return {doc,y:0}; }
-function pHeader(c,title,sub){ c.doc.setFont(undefined,'bold').setFontSize(16); c.doc.text(title,14,18);
-  c.doc.setFont(undefined,'normal').setFontSize(10).setTextColor(120); c.doc.text(sub,14,24.5); c.doc.setTextColor(0); c.y=32; }
+function pHeader(c,title,sub){ c.doc.setFont(undefined,'bold').setFontSize(16); c.doc.text(pdfSafe(title),14,18);
+  c.doc.setFont(undefined,'normal').setFontSize(10).setTextColor(120); c.doc.text(pdfSafe(sub),14,24.5); c.doc.setTextColor(0); c.y=32; }
 function pBreak(c,need){ if(c.y+(need||6)>288){ c.doc.addPage(); c.y=18; } }
-function pSection(c,t){ pBreak(c,12); c.y+=2; c.doc.setFont(undefined,'bold').setFontSize(11); c.doc.text(t,14,c.y); c.y+=2;
+function pSection(c,t){ pBreak(c,12); c.y+=2; c.doc.setFont(undefined,'bold').setFontSize(11); c.doc.text(pdfSafe(t),14,c.y); c.y+=2;
   c.doc.setDrawColor(210); c.doc.line(14,c.y,196,c.y); c.y+=5; c.doc.setFont(undefined,'normal'); }
 function pRow(c,cols,vals,bold){
   pBreak(c,6); c.doc.setFont(undefined,bold?'bold':'normal').setFontSize(9);
-  cols.forEach((col,i)=>{ let v=String(vals[i]??''); const align=col.a==='r'?'right':'left';
+  cols.forEach((col,i)=>{ let v=pdfSafe(vals[i]); const align=col.a==='r'?'right':'left';
     if(col.w){ /* truncate */ while(v.length>3&&c.doc.getTextWidth(v)>col.w){ v=v.slice(0,-2); } }
     c.doc.text(v,col.x,c.y,{align}); });
   c.y+=5;
 }
 function pTotal(c,label,val){ pBreak(c,6); c.doc.setFont(undefined,'bold').setFontSize(10);
-  c.doc.text(label,14,c.y); c.doc.text(money(val)+' '+CONFIG.CURRENCY,196,c.y,{align:'right'}); c.y+=6; c.doc.setFont(undefined,'normal'); }
+  c.doc.text(pdfSafe(label),14,c.y); c.doc.text(money(val)+' '+CONFIG.CURRENCY,196,c.y,{align:'right'}); c.y+=6; c.doc.setFont(undefined,'normal'); }
 
 function reportDaily(){
   const day=document.getElementById('r_day').value; if(!day)return;
-  const c=pdfCtx(newDoc()); pHeader(c,"Kunlik hisobot (batafsil)",prettyDate(day));
+  const doc=newDoc(); if(!doc)return;
+  const c=pdfCtx(doc); pHeader(c,"Kunlik hisobot (batafsil)",prettyDate(day));
   const inRows=ST.ledger.filter(e=>e.date===day&&e.dir==='in');
   const outRows=ST.ledger.filter(e=>e.date===day&&e.dir==='out');
   const dg=ST.debtGiven.filter(d=>d.date===day);
@@ -807,18 +914,18 @@ function reportDaily(){
   if(!outRows.length) pRow(c,colsIn,['—','','','','0']);
   pTotal(c,'Jami chiqim',tout);
 
-  const colsDG=[{x:14,w:40},{x:70,w:70},{x:196,a:'r'}];
+  const colsDG=[{x:14,w:32},{x:52,w:56},{x:116,w:20},{x:196,a:'r'}];
   pSection(c,"Qarz berilgan");
-  pRow(c,colsDG,['Kim (kassir)','Qarzdor','Summa'],true);
-  let tdg=0; dg.forEach(d=>{ tdg+=d.amount; pRow(c,colsDG,[d.by,d.name||"Noma'lum",money(d.amount)]); });
-  if(!dg.length) pRow(c,colsDG,['—','','0']);
+  pRow(c,colsDG,['Kim (kassir)','Qarzdor','Joy','Summa'],true);
+  let tdg=0; dg.forEach(d=>{ tdg+=d.amount; pRow(c,colsDG,[d.by,d.name||"Noma'lum",joy(d.safe),money(d.amount)]); });
+  if(!dg.length) pRow(c,colsDG,['—','','','0']);
   pTotal(c,'Jami qarz berilgan',tdg);
 
-  const colsDP=[{x:14,w:34},{x:56,w:44},{x:106,w:24},{x:196,a:'r'}];
+  const colsDP=[{x:14,w:30},{x:48,w:40},{x:94,w:22},{x:124,w:18},{x:196,a:'r'}];
   pSection(c,"Qarz to'langan");
-  pRow(c,colsDP,['Kim (kassir)','Qarzdor','Usul','Summa'],true);
-  let tdp=0; dp.forEach(d=>{ tdp+=d.amount; pRow(c,colsDP,[d.by,d.name||"Noma'lum",usul(d.method),money(d.amount)]); });
-  if(!dp.length) pRow(c,colsDP,['—','','','0']);
+  pRow(c,colsDP,['Kim (kassir)','Qarzdor','Usul','Joy','Summa'],true);
+  let tdp=0; dp.forEach(d=>{ tdp+=d.amount; pRow(c,colsDP,[d.by,d.name||"Noma'lum",usul(d.method),joy(d.safe),money(d.amount)]); });
+  if(!dp.length) pRow(c,colsDP,['—','','','','0']);
   pTotal(c,"Jami qarz to'langan",tdp);
 
   c.doc.save('hisobot_kunlik_'+day+'.pdf'); toast('PDF yuklandi ✓');
@@ -827,7 +934,8 @@ function reportDaily(){
 function reportMonthly(){
   const m=document.getElementById('r_month').value; if(!m)return;
   const [yy,mm]=m.split('-');
-  const c=pdfCtx(newDoc()); pHeader(c,"Oylik hisobot",MONTHS_UZ[+mm-1]+' '+yy);
+  const doc=newDoc(); if(!doc)return;
+  const c=pdfCtx(doc); pHeader(c,"Oylik hisobot",MONTHS_UZ[+mm-1]+' '+yy);
 
   // kunlik jamlar
   const days={};
@@ -856,39 +964,52 @@ function reportMonthly(){
   sk2.forEach(k=>pRow(c,colsC,[k,money(spend[k])]));
   if(!sk2.length) pRow(c,colsC,['—','0']);
 
-  // kirim manbalari
-  const src={PC:0,'Bar sotuv':0,"Qarz to'lovi":0};
+  // kirim manbalari (joy bo'yicha)
+  const src={pcIn:0,barIn:0,dpPC:0,dpBAR:0};
   ST.ledger.forEach(e=>{ if(!e.date.startsWith(m)||e.dir!=='in')return;
-    if(e.reason==='Sotuv') src['Bar sotuv']+=e.amount; else if(e.reason==="Qarz to'lovi") src["Qarz to'lovi"]+=e.amount; else src.PC+=e.amount; });
-  let dgm=0; ST.debtGiven.forEach(x=>{ if(x.date.startsWith(m)) dgm+=x.amount; });
+    if(e.reason==="Qarz to'lovi"){ if(e.safe==='BAR') src.dpBAR+=e.amount; else src.dpPC+=e.amount; }
+    else if(e.safe==='BAR') src.barIn+=e.amount; else src.pcIn+=e.amount; });
+  let dgPC=0,dgBAR=0; ST.debtGiven.forEach(x=>{ if(!x.date.startsWith(m))return;
+    if(x.safe==='BAR') dgBAR+=x.amount; else dgPC+=x.amount; });
   pSection(c,"Kirim manbalari");
   pRow(c,colsC,['Manba','Summa'],true);
-  pRow(c,colsC,['PC (naqd/karta)',money(src.PC)]);
-  pRow(c,colsC,['Bar sotuv',money(src['Bar sotuv'])]);
-  pRow(c,colsC,["Qarz to'lovi",money(src["Qarz to'lovi"])]);
-  pRow(c,colsC,['Qarzga berilgan',money(dgm)]);
+  pRow(c,colsC,['PC (naqd/karta)',money(src.pcIn)]);
+  pRow(c,colsC,['Bar (sotuv va kirim)',money(src.barIn)]);
+  pRow(c,colsC,["Qarz to'lovi — PC",money(src.dpPC)]);
+  pRow(c,colsC,["Qarz to'lovi — Bar",money(src.dpBAR)]);
+  pSection(c,"Qarzga berilgan (pul kirmagan)");
+  pRow(c,colsC,['Joy','Summa'],true);
+  pRow(c,colsC,['PC',money(dgPC)]);
+  pRow(c,colsC,['Bar',money(dgBAR)]);
+  pRow(c,colsC,['Jami',money(dgPC+dgBAR)],true);
 
   c.doc.save('hisobot_oylik_'+m+'.pdf'); toast('PDF yuklandi ✓');
 }
 
 function reportDebt(){
-  const c=pdfCtx(newDoc()); pHeader(c,"Qarz hisoboti",prettyDate(todayBiz()));
+  const doc=newDoc(); if(!doc)return;
+  const c=pdfCtx(doc); pHeader(c,"Qarz hisoboti",prettyDate(todayBiz()));
   const people=perPersonDebt();
   let tg=0,tp=0; people.forEach(p=>{ tg+=p.given; tp+=p.paid; });
   pSection(c,"Umumiy");
   pTotal(c,'Jami berilgan qarz',tg);
   pTotal(c,"Jami to'langan",tp);
   pTotal(c,'Qoldiq (bizga qarz)',tg-tp);
+  pTotal(c,'shundan PC',debtOutstanding('PC'));
+  pTotal(c,'shundan Bar',debtOutstanding('BAR'));
 
   const active=people.filter(p=>p.remaining>0.5).sort((a,b)=>b.remaining-a.remaining);
   pSection(c,"Shaxslar bo'yicha (qoldiq bor)");
-  const cols=[{x:14,w:34},{x:52,w:30},{x:110,w:36},{x:196,a:'r'}];
+  const cols=[{x:14,w:28},{x:46,w:44},{x:96,w:16},{x:118,w:32},{x:196,a:'r'}];
   active.forEach(p=>{
     pBreak(c,10); c.y+=1; c.doc.setFont(undefined,'bold').setFontSize(10);
-    c.doc.text(esc(p.name),14,c.y); c.doc.setTextColor(200,80,0);
-    c.doc.text('Qoldiq: '+money(p.remaining)+' '+CONFIG.CURRENCY,196,c.y,{align:'right'}); c.doc.setTextColor(0); c.y+=5;
-    pRow(c,cols,['Sana','Turi','Kassir','Summa'],true);
-    p.rows.forEach(r=>pRow(c,cols,[prettyDate(r.date), r.type==='in'?'Berildi':"To'landi"+(r.method?' ('+(r.method==='cash'?'naqd':'karta')+')':''), r.by||'—', (r.type==='in'?'+':'−')+money(r.amount)]));
+    c.doc.text(pdfSafe(p.name),14,c.y); c.doc.setTextColor(200,80,0);
+    c.doc.text('Qoldiq: '+money(p.remaining)+' (PC '+money(p.remainingPC)+' / Bar '+money(p.remainingBAR)+') '+CONFIG.CURRENCY,196,c.y,{align:'right'});
+    c.doc.setTextColor(0); c.y+=5;
+    pRow(c,cols,['Sana','Turi','Joy','Kassir','Summa'],true);
+    p.rows.forEach(r=>pRow(c,cols,[prettyDate(r.date),
+      r.type==='in'?'Berildi':"To'landi"+(r.method?' ('+(r.method==='cash'?'naqd':'karta')+')':''),
+      r.safe==='BAR'?'Bar':'PC', r.by||'—', (r.type==='in'?'+':'−')+money(r.amount)]));
     c.y+=2;
   });
   if(!active.length) pRow(c,[{x:14}],['Faol qarzdor yo\'q']);
@@ -1009,7 +1130,7 @@ function logout(){ CURRENT=null; LS.set('kassa_session',''); render(); }
 /* ---------- ishga tushirish ---------- */
 async function boot(){
   const t=new URLSearchParams(location.search).get('tab');
-  if(['PC','BAR','SET'].includes(t)) TAB=t;
+  if(['PC','BAR','REP','SET'].includes(t)) TAB=t;
   rebuild(); restoreSession(); render();
   if(online()){ await sync(); rebuild(); restoreSession(); render(); }
 }
